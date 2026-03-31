@@ -1,5 +1,5 @@
 {
-  "name": "aegis-dashboard",
+  "name": "aegis-dashboard-vite",
   "private": true,
   "version": "0.0.0",
   "type": "module",

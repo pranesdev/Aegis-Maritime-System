@@ -1,9 +1,10 @@
 {
-  "name": "aegis-backend",
+  "name": "aegis-backend-api",
   "version": "1.0.0",
-  "main": "index.js",
+  "main": "src/api-server.js",
   "scripts": {
-    "dev": "node server.js",
+    "dev": "node src/api-server.js",
+    "dev:bridge": "node src/services/serial-bridge.js",
     "test": "echo \"Error: no test specified\" && exit 1"
   },
   "keywords": [],
