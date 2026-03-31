@@ -18,6 +18,24 @@ interface LeafletMapProps {
 // ─── Tamil Nadu Maritime Boundaries ─────────────────────────────────────────
 // Coordinates are [lat, lng]
 
+// Base Tamil Nadu coastline used to derive fixed-distance maritime zones
+const TN_COASTLINE_COORDS: [number, number][] = [
+  [13.47, 80.30], [13.32, 80.30], [13.20, 80.30], [13.08, 80.29],
+  [12.95, 80.27], [12.82, 80.23], [12.70, 80.20], [12.57, 80.18],
+  [12.45, 80.14], [12.32, 80.10], [12.20, 80.06], [12.08, 80.00],
+  [11.96, 79.86], [11.84, 79.79], [11.72, 79.77], [11.60, 79.77],
+  [11.48, 79.77], [11.36, 79.78], [11.24, 79.80], [11.12, 79.81],
+  [11.00, 79.82], [10.88, 79.83], [10.76, 79.84], [10.64, 79.84],
+  [10.52, 79.85], [10.40, 79.85], [10.28, 79.84], [10.16, 79.81],
+  [10.04, 79.79], [9.92, 79.66], [9.80, 79.53], [9.68, 79.40],
+  [9.56, 79.27], [9.44, 79.24], [9.32, 79.30], [9.20, 79.16],
+  [9.08, 78.94], [8.96, 78.70], [8.84, 78.48], [8.72, 78.21],
+  [8.60, 77.95], [8.48, 77.84], [8.36, 77.74], [8.24, 77.64],
+  [8.12, 77.57], [8.02, 77.52],
+]
+
+const TN_LAND_CENTROID: [number, number] = [10.9, 78.7]
+
 // Base IMBL coordinates — actual India–Sri Lanka maritime boundary
 const IMBL_PALK_COORDS: [number, number][] = [
   [10.80, 80.30], [10.60, 80.20], [10.47, 80.12], [10.22, 79.97],
@@ -41,14 +59,7 @@ const TN_MARITIME_BOUNDARIES = [
     description: "Shoreline (Baseline)",
     usedForDistance: false,
     showInLegend: true,
-    coordinates: [
-      [13.47, 80.30], [13.08, 80.29], [12.62, 80.19], [12.27, 80.08],
-      [11.93, 79.83], [11.75, 79.77], [11.50, 79.77], [11.20, 79.80],
-      [10.92, 79.83], [10.76, 79.84], [10.30, 79.85], [10.03, 79.78],
-      [9.77,  79.50], [9.50,  79.22], [9.28,  79.31], [9.14,  79.06],
-      [8.88,  78.53], [8.78,  78.13], [8.55,  77.90], [8.30,  77.68],
-      [8.08,  77.55],
-    ] as [number, number][],
+    coordinates: TN_COASTLINE_COORDS,
   },
   {
     name: "Warning Zone (25 km)",
@@ -56,21 +67,10 @@ const TN_MARITIME_BOUNDARIES = [
     weight: 2.5,
     opacity: 0.9,
     dashArray: "10, 6" as string | null,
-    description: "25 km buffer — approach with caution",
-    usedForDistance: false,
+    description: "Fixed 25 km offshore boundary from TN coast",
+    usedForDistance: true,
     showInLegend: true,
-    coordinates: offsetLine(IMBL_PALK_COORDS, 25 / 111),
-  },
-  {
-    name: "Warning Zone (25 km)",
-    color: "#f59e0b",
-    weight: 2.5,
-    opacity: 0.9,
-    dashArray: "10, 6" as string | null,
-    description: "25 km buffer — approach with caution",
-    usedForDistance: false,
-    showInLegend: false,
-    coordinates: offsetLine(IMBL_GULF_COORDS, 25 / 111),
+    coordinates: offsetFromCoastline(TN_COASTLINE_COORDS, 25, TN_LAND_CENTROID),
   },
   {
     name: "Danger Zone (12 km)",
@@ -78,21 +78,10 @@ const TN_MARITIME_BOUNDARIES = [
     weight: 2.5,
     opacity: 0.95,
     dashArray: "6, 4" as string | null,
-    description: "12 km buffer — turn back immediately",
-    usedForDistance: false,
+    description: "Fixed 12 km offshore boundary from TN coast",
+    usedForDistance: true,
     showInLegend: true,
-    coordinates: offsetLine(IMBL_PALK_COORDS, 12 / 111),
-  },
-  {
-    name: "Danger Zone (12 km)",
-    color: "#f97316",
-    weight: 2.5,
-    opacity: 0.95,
-    dashArray: "6, 4" as string | null,
-    description: "12 km buffer — turn back immediately",
-    usedForDistance: false,
-    showInLegend: false,
-    coordinates: offsetLine(IMBL_GULF_COORDS, 12 / 111),
+    coordinates: offsetFromCoastline(TN_COASTLINE_COORDS, 12, TN_LAND_CENTROID),
   },
   {
     name: "IMBL — Palk Strait",
@@ -262,6 +251,9 @@ export default function LeafletMap({
   const lastPositionRef = useRef<{ lat: number; lng: number; time: number } | null>(null)
   const demoIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null)
   const demoIndexRef = useRef(0)
+  const followVesselRef = useRef(true)
+  const [followVessel, setFollowVessel] = useState(true)
+  const styleElRef = useRef<HTMLStyleElement | null>(null)
 
   useEffect(() => {
     if (!mapRef.current || mapInstanceRef.current) return
@@ -289,11 +281,12 @@ export default function LeafletMap({
       maxZoom: 19,
     }).addTo(map)
 
-    // Add a secondary labels layer
-    L.tileLayer("https://{s}.basemaps.cartocdn.com/light_only_labels/{z}/{x}/{y}{r}.png", {
+    // Add a labels layer with larger, clearer place names on satellite view
+    L.tileLayer("https://services.arcgisonline.com/ArcGIS/rest/services/Reference/World_Boundaries_and_Places/MapServer/tile/{z}/{y}/{x}", {
       attribution: '',
       maxZoom: 19,
-      pane: 'overlayPane'
+      pane: 'overlayPane',
+      opacity: 0.95,
     }).addTo(map)
 
     // Draw all Tamil Nadu maritime boundaries
@@ -331,9 +324,9 @@ export default function LeafletMap({
         L.marker(mid, {
           icon: L.divIcon({
             className: "eez-label",
-            html: `<div style="background:${boundary.color};color:#fff;padding:3px 9px;border-radius:5px;font-size:10px;white-space:nowrap;box-shadow:0 2px 10px rgba(0,0,0,0.5);font-weight:600;border:1px solid rgba(255,255,255,0.3);">${boundary.name}</div>`,
-            iconSize: [190, 22],
-            iconAnchor: [95, 11],
+            html: `<div style="background:${boundary.color};color:#fff;padding:5px 11px;border-radius:7px;font-size:13px;white-space:nowrap;box-shadow:0 2px 10px rgba(0,0,0,0.5);font-weight:700;border:1px solid rgba(255,255,255,0.3);">${boundary.name}</div>`,
+            iconSize: [230, 30],
+            iconAnchor: [115, 15],
           }),
         }).addTo(map)
       }
@@ -341,35 +334,14 @@ export default function LeafletMap({
 
     setBoundaryCount(TN_MARITIME_BOUNDARIES.length)
 
-    // Add legend
-    const legend = L.control({ position: "bottomleft" })
-    legend.onAdd = function () {
-      const div = L.DomUtil.create("div", "legend")
-      div.innerHTML = `
-        <div style="background:rgba(10,22,40,0.95);padding:14px;border-radius:10px;border:1px solid rgba(6,182,212,0.4);box-shadow:0 4px 25px rgba(0,0,0,0.4);backdrop-filter:blur(10px);">
-          <div style="color:#06b6d4;font-weight:700;margin-bottom:10px;font-size:12px;letter-spacing:0.5px;">TAMIL NADU MARITIME LIMITS</div>
-          ${TN_MARITIME_BOUNDARIES.filter(b => b.showInLegend).map(b => `
-            <div style="display:flex;align-items:center;gap:8px;margin:5px 0;">
-              <div style="width:22px;height:3px;background:${b.color};border-radius:2px;${b.dashArray ? `background:repeating-linear-gradient(90deg,${b.color} 0,${b.color} 6px,transparent 6px,transparent 10px)` : ''};box-shadow:0 0 6px ${b.color};"></div>
-              <div>
-                <div style="color:#e2e8f0;font-size:10px;font-weight:600;">${b.name}</div>
-                <div style="color:#64748b;font-size:9px;">${b.description}</div>
-              </div>
-            </div>`).join("")}
-        </div>
-      `
-      return div
-    }
-    legend.addTo(map)
-
     // Custom vessel marker
     const vesselIcon = L.divIcon({
       className: "vessel-marker",
       html: `
         <div style="position: relative;">
-          <div style="position: absolute; width: 44px; height: 44px; left: -2px; top: -2px; background: rgba(6, 182, 212, 0.25); border-radius: 50%; animation: ping 1.5s cubic-bezier(0, 0, 0.2, 1) infinite;"></div>
-          <div style="position: absolute; width: 30px; height: 30px; left: 5px; top: 5px; background: rgba(34, 197, 94, 0.2); border-radius: 50%; animation: ping 2s cubic-bezier(0, 0, 0.2, 1) infinite 0.5s;"></div>
-          <svg width="40" height="40" viewBox="0 0 24 24" style="filter: drop-shadow(0 4px 8px rgba(0,0,0,0.4));">
+          <div style="position: absolute; width: 46px; height: 46px; left: -3px; top: -3px; background: rgba(6, 182, 212, 0.25); border-radius: 50%; animation: ping 1.5s cubic-bezier(0, 0, 0.2, 1) infinite;"></div>
+          <div style="position: absolute; width: 32px; height: 32px; left: 4px; top: 4px; background: rgba(34, 197, 94, 0.2); border-radius: 50%; animation: ping 2s cubic-bezier(0, 0, 0.2, 1) infinite 0.5s;"></div>
+          <svg width="40" height="40" viewBox="0 0 64 64" style="filter: drop-shadow(0 4px 8px rgba(0,0,0,0.5));">
             <defs>
               <linearGradient id="vesselGrad" x1="0%" y1="0%" x2="100%" y2="100%">
                 <stop offset="0%" stop-color="#06b6d4" />
@@ -377,7 +349,11 @@ export default function LeafletMap({
                 <stop offset="100%" stop-color="#0891b2" />
               </linearGradient>
             </defs>
-            <path fill="url(#vesselGrad)" d="M12 2C8.13 2 5 5.13 5 9c0 5.25 7 13 7 13s7-7.75 7-13c0-3.87-3.13-7-7-7zm0 9.5c-1.38 0-2.5-1.12-2.5-2.5s1.12-2.5 2.5-2.5 2.5 1.12 2.5 2.5-1.12 2.5-2.5 2.5z" />
+            <path fill="#e2f3ff" d="M13 36h38l-7 15H20z" />
+            <path fill="url(#vesselGrad)" d="M17 34h30l-5 11H22z" />
+            <path fill="#fb923c" d="M29 18h5v16h-5z" />
+            <path fill="#f8fafc" d="M34 19l10 6H34z" />
+            <path fill="#bae6fd" d="M20 34h24l-3 7H23z" opacity="0.85" />
           </svg>
         </div>
       `,
@@ -408,12 +384,28 @@ export default function LeafletMap({
 
     mapInstanceRef.current = map
 
-    // Leaflet needs invalidateSize after flex layout settles
-    setTimeout(() => map.invalidateSize(), 50)
-    setTimeout(() => map.invalidateSize(), 300)
+    // Leaflet needs invalidateSize after flex layout settles.
+    // Stop auto-following when user manually pans or zooms.
+    const handleDragStart = () => {
+      followVesselRef.current = false
+      setFollowVessel(false)
+    }
+    map.on("dragstart", handleDragStart)
+
+    const safeInvalidateSize = () => {
+      if (!mapInstanceRef.current) return
+      try {
+        map.invalidateSize()
+      } catch {
+        // Ignore late invalidation calls during unmount/teardown.
+      }
+    }
+
+    const invalidateTimeoutShort = window.setTimeout(safeInvalidateSize, 50)
+    const invalidateTimeoutLong = window.setTimeout(safeInvalidateSize, 300)
 
     // Also revalidate whenever the container is resized
-    const ro = new ResizeObserver(() => map.invalidateSize())
+    const ro = new ResizeObserver(safeInvalidateSize)
     if (mapRef.current) ro.observe(mapRef.current)
 
     // Add styles
@@ -466,9 +458,17 @@ export default function LeafletMap({
       }
     `
     document.head.appendChild(style)
+    styleElRef.current = style
 
     return () => {
+      window.clearTimeout(invalidateTimeoutShort)
+      window.clearTimeout(invalidateTimeoutLong)
       ro.disconnect()
+      map.off("dragstart", handleDragStart)
+      if (styleElRef.current) {
+        styleElRef.current.remove()
+        styleElRef.current = null
+      }
       if (mapInstanceRef.current) {
         mapInstanceRef.current.remove()
         mapInstanceRef.current = null
@@ -491,7 +491,7 @@ export default function LeafletMap({
         const lng = Number(data.lon)
         if (markerRef.current && mapInstanceRef.current) {
           markerRef.current.setLatLng([lat, lng])
-          mapInstanceRef.current.panTo([lat, lng])
+          if (followVesselRef.current) mapInstanceRef.current.panTo([lat, lng])
         }
         pathRef.current.push([lat, lng])
         pathPolylineRef.current?.setLatLngs(pathRef.current)
@@ -526,7 +526,7 @@ export default function LeafletMap({
 
       if (markerRef.current && mapInstanceRef.current) {
         markerRef.current.setLatLng([lat, lng])
-        mapInstanceRef.current.panTo([lat, lng])
+        if (followVesselRef.current) mapInstanceRef.current.panTo([lat, lng])
       }
 
       pathRef.current.push([lat, lng])
@@ -539,13 +539,20 @@ export default function LeafletMap({
       if (data.zone) onZoneUpdate?.(data.zone)
       onEEZUpdate?.(findNearestBoundary(lat, lng))
 
-      if (lastPositionRef.current) {
+      if (typeof (data as { speed?: unknown }).speed === "number") {
+        const directSpeed = Number((data as { speed: number }).speed)
+        if (Number.isFinite(directSpeed) && directSpeed >= 0) {
+          onSpeedUpdate(Math.min(directSpeed, 120))
+        }
+      } else if (lastPositionRef.current) {
         const timeDiff = (currentTime - lastPositionRef.current.time) / 1000 / 3600
         if (timeDiff > 0) {
           const distKm = haversineDistance(lat, lng, lastPositionRef.current.lat, lastPositionRef.current.lng)
           const speedKnots = (distKm / timeDiff) * 0.539957
-          if (speedKnots < 100) onSpeedUpdate(speedKnots)
+          if (Number.isFinite(speedKnots) && speedKnots >= 0) onSpeedUpdate(Math.min(speedKnots, 120))
         }
+      } else {
+        onSpeedUpdate(0)
       }
       lastPositionRef.current = { lat, lng, time: currentTime }
     })
@@ -581,7 +588,7 @@ export default function LeafletMap({
       const currentTime = Date.now()
 
       if (markerRef.current) markerRef.current.setLatLng([lat, lng])
-      mapInstanceRef.current.panTo([lat, lng])
+      if (followVesselRef.current) mapInstanceRef.current.panTo([lat, lng])
 
       pathRef.current.push([lat, lng])
       if (pathRef.current.length > 200) pathRef.current.shift()
@@ -606,8 +613,10 @@ export default function LeafletMap({
         if (timeDiff > 0) {
           const distKm = haversineDistance(lat, lng, lastPositionRef.current.lat, lastPositionRef.current.lng)
           const speedKnots = (distKm / timeDiff) * 0.539957
-          if (speedKnots < 100) onSpeedUpdate(speedKnots)
+          if (Number.isFinite(speedKnots) && speedKnots >= 0) onSpeedUpdate(Math.min(speedKnots, 120))
         }
+      } else {
+        onSpeedUpdate(0)
       }
       lastPositionRef.current = { lat, lng, time: currentTime }
       demoIndexRef.current = (demoIndexRef.current + 1) % DEMO_ROUTE.length
@@ -626,63 +635,73 @@ export default function LeafletMap({
       <div ref={mapRef} className="w-full h-full" style={{ minHeight: '520px', borderRadius: '1rem' }} />
 
       <div className="absolute top-4 left-4 z-[1000]">
-        <div className="flex items-center gap-3 px-5 py-3 rounded-xl text-base font-semibold" style={{
+        <div className="flex items-center gap-2 px-3.5 py-2.5 rounded-lg text-base font-medium" style={{
           background: "linear-gradient(135deg, rgba(10, 22, 40, 0.95) 0%, rgba(13, 33, 55, 0.9) 100%)",
           border: "1px solid rgba(6, 182, 212, 0.4)",
           boxShadow: "0 4px 20px rgba(0, 0, 0, 0.4)",
         }}>
-          <div className={`w-3.5 h-3.5 rounded-full ${isTracking ? "bg-green-400 animate-pulse" : "bg-yellow-400"}`}></div>
-          <span className="text-gray-200">{isTracking ? "Live Backend Data" : "Backend Offline"}</span>
+          <div className={`w-3 h-3 rounded-full flex-shrink-0 ${isTracking ? "bg-green-400 animate-pulse" : "bg-yellow-400"}`} />
+          <span className="text-sm text-gray-200">{isTracking ? "Live" : "Offline"}</span>
         </div>
       </div>
 
       <div className="absolute top-4 right-4 z-[1000]">
-        <div className="px-5 py-3 rounded-xl text-base" style={{
-          background: "linear-gradient(135deg, rgba(6, 182, 212, 0.25) 0%, rgba(34, 197, 94, 0.2) 100%)",
-          border: "1px solid rgba(6, 182, 212, 0.5)",
-          boxShadow: "0 4px 20px rgba(6, 182, 212, 0.25)",
-        }}>
-          <span className="text-cyan-300 font-bold">{boundaryCount} TN Maritime Limits</span>
+        <div className="flex items-center gap-2">
+          {!followVessel && (
+            <button
+              onClick={() => {
+                followVesselRef.current = true
+                setFollowVessel(true)
+                if (markerRef.current && mapInstanceRef.current) {
+                  mapInstanceRef.current.panTo(markerRef.current.getLatLng())
+                }
+              }}
+              className="flex items-center gap-1.5 px-3.5 py-2.5 rounded-lg text-sm font-semibold text-white transition-all"
+              style={{ background: "rgba(6,182,212,0.9)", border: "1px solid rgba(6,182,212,0.8)", boxShadow: "0 2px 12px rgba(6,182,212,0.4)" }}
+            >
+              <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M17.657 16.657L13.414 20.9a1.998 1.998 0 01-2.827 0l-4.244-4.243a8 8 0 1111.314 0z" />
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 11a3 3 0 11-6 0 3 3 0 016 0z" />
+              </svg>
+              Re-center
+            </button>
+          )}
+          {followVessel && (
+            <div className="flex items-center gap-1.5 px-3.5 py-2.5 rounded-lg text-sm font-medium" style={{ background: "rgba(10,22,40,0.85)", border: "1px solid rgba(34,197,94,0.4)" }}>
+              <span className="w-2 h-2 rounded-full bg-green-400 animate-pulse" />
+              <span className="text-green-300">Following</span>
+            </div>
+          )}
+          <div className="px-3 py-2.5 rounded-lg text-sm text-cyan-400 font-medium" style={{ background: "rgba(10,22,40,0.85)", border: "1px solid rgba(6,182,212,0.3)" }}>
+            {boundaryCount} limits
+          </div>
         </div>
       </div>
     </div>
   )
 }
 
-// Offset a line by a given distance (in degrees, roughly ~111km per degree)
-// Positive offset moves the line towards the "inside" (shore side)
-function offsetLine(points: [number, number][], offsetDegrees: number): [number, number][] {
-  if (points.length < 2) return points
+// Create a fixed-distance offshore line from coastline by pushing points away from TN land centroid.
+function offsetFromCoastline(
+  points: [number, number][],
+  offsetKm: number,
+  landCentroid: [number, number]
+): [number, number][] {
+  return points.map(([lat, lng]) => {
+    const latScaleKm = 111
+    const lngScaleKm = 111 * Math.cos((lat * Math.PI) / 180)
 
-  const result: [number, number][] = []
+    const awayLatKm = (lat - landCentroid[0]) * latScaleKm
+    const awayLngKm = (lng - landCentroid[1]) * lngScaleKm
+    const norm = Math.hypot(awayLatKm, awayLngKm) || 1
 
-  for (let i = 0; i < points.length; i++) {
-    const prev = points[Math.max(0, i - 1)]
-    const curr = points[i]
-    const next = points[Math.min(points.length - 1, i + 1)]
+    const shiftLatKm = (awayLatKm / norm) * offsetKm
+    const shiftLngKm = (awayLngKm / norm) * offsetKm
 
-    // Calculate direction vectors
-    const dx1 = curr[0] - prev[0]
-    const dy1 = curr[1] - prev[1]
-    const dx2 = next[0] - curr[0]
-    const dy2 = next[1] - curr[1]
-
-    // Average direction
-    const dx = (dx1 + dx2) / 2
-    const dy = (dy1 + dy2) / 2
-
-    // Perpendicular direction (normalized)
-    const len = Math.sqrt(dx * dx + dy * dy) || 1
-    const nx = -dy / len
-    const ny = dx / len
-
-    // Apply offset (inward toward shore)
-    result.push([
-      curr[0] + nx * offsetDegrees,
-      curr[1] + ny * offsetDegrees
-    ])
-  }
-
-  return result
+    return [
+      lat + shiftLatKm / latScaleKm,
+      lng + shiftLngKm / (lngScaleKm || 1),
+    ]
+  })
 }
 
