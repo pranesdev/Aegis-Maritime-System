@@ -1,11 +1,11 @@
-// server.js
+// api-server.js
 const express = require('express');
 const cors = require('cors');
 const mongoose = require('mongoose');
 const http = require('http');
 const path = require('path');
 const { Server } = require('socket.io');
-require('dotenv').config({ path: path.join(__dirname, '.env') });
+require('dotenv').config({ path: path.resolve(__dirname, '../.env') });
 
 const app = express();
 app.use(cors());
