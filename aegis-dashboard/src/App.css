@@ -1,45 +1,166 @@
-import { useState } from "react";
-import MapView from "./components/MapView";
+﻿/* ── Reset & Root ─────────────────────────────────────────────────────────── */
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 
-const BOUNDARY_POINTS = [
-  [9.50, 80.30], [9.70, 80.20], [9.95, 80.10], [10.15, 79.95], [10.35, 79.80]
-];
+:root {
+  --bg-dark:    #070e1a;
+  --bg-panel:   #0d1b2e;
+  --bg-card:    #0f2040;
+  --border:     rgba(30, 58, 95, 0.6);
+  --cyan:       #06b6d4;
+  --green:      #22c55e;
+  --yellow:     #f59e0b;
+  --red:        #ef4444;
+  --text-1:     #e2e8f0;
+  --text-2:     #94a3b8;
+  --text-3:     #475569;
+  font-family: system-ui, -apple-system, sans-serif;
+}
 
-export default function App() {
-  const [boatPosition, setBoatPosition] = useState([9.30, 80.50]);
-  const [boatPath, setBoatPath] = useState([[9.30, 80.50]]);
-  const [zone, setZone] = useState("SAFE");
-  const [distance, setDistance] = useState("25.00");
+html, body, #root { width: 100vw; height: 100vh; overflow: hidden; background: var(--bg-dark); color: var(--text-1); }
 
-  return (
-    // The Main Wrapper: Forces full screen, dark mode, and side-by-side flex layout
-    <div style={{ display: 'flex', width: '100vw', height: '100vh', backgroundColor: '#121212', color: 'white', margin: 0, padding: 0, overflow: 'hidden' }}>
-      
-      {/* LEFT SIDE: The Sidebar (Forced to 350px width) */}
-      <div style={{ width: '350px', minWidth: '350px', padding: '20px', backgroundColor: '#1e1e1e', borderRight: '2px solid #333', zIndex: 10, display: 'flex', flexDirection: 'column' }}>
-        <h2 style={{ margin: 0 }}>🛡️ AEGIS Dashboard</h2>
-        <h3 style={{ 
-          color: zone === 'DANGER' ? '#ef4444' : zone === 'WARNING' ? '#f59e0b' : '#22c55e',
-          marginTop: '10px'
-        }}>
-          ZONE: {zone} ({distance}km)
-        </h3>
-        
-        <div style={{ marginTop: '30px', borderTop: '1px solid #444', paddingTop: '20px', flex: 1 }}>
-          <h3 style={{ margin: 0 }}>Live Boat Logs</h3>
-          <p style={{ color: '#888', marginTop: '10px' }}>Waiting for LoRa packets...</p>
-        </div>
-      </div>
+/* ── Layout ───────────────────────────────────────────────────────────────── */
+.dashboard-root {
+  display: flex;
+  width: 100vw;
+  height: 100vh;
+  background: var(--bg-dark);
+}
 
-      {/* RIGHT SIDE: The Map (Forced to take up all remaining space) */}
-      <div style={{ flex: 1, height: '100vh', position: 'relative' }}>
-        <MapView 
-          boatPosition={boatPosition} 
-          boundaryPoints={BOUNDARY_POINTS} 
-          boatPath={boatPath} 
-        />
-      </div>
+.sidebar {
+  width: 280px;
+  min-width: 280px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 16px;
+  background: var(--bg-panel);
+  border-right: 3px solid var(--border);
+  overflow-y: auto;
+  z-index: 10;
+  transition: border-color 0.4s;
+}
 
-    </div>
-  );
+.sidebar-footer {
+  margin-top: auto;
+  padding-top: 12px;
+  font-size: 11px;
+  color: var(--text-3);
+  text-align: center;
+}
+
+.map-area { flex: 1; height: 100vh; position: relative; }
+
+/* ── Sidebar border colour by zone ───────────────────────────────────────── */
+.zone-danger-border  { border-right-color: var(--red);    }
+.zone-warning-border { border-right-color: var(--yellow); }
+.zone-safe-border    { border-right-color: var(--green);  }
+.zone-unknown-border { border-right-color: var(--border); }
+
+/* ── Brand ───────────────────────────────────────────────────────────────── */
+.sidebar-brand {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding-bottom: 12px;
+  border-bottom: 1px solid var(--border);
+}
+.brand-icon {
+  width: 34px; height: 34px; flex-shrink: 0;
+  border-radius: 50%;
+  border: 1.5px solid rgba(6,182,212,0.6);
+  display: flex; align-items: center; justify-content: center;
+  color: var(--cyan);
+}
+.brand-icon svg { width: 18px; height: 18px; }
+.brand-title { font-size: 15px; font-weight: 700; letter-spacing: 0.05em; }
+.brand-sub   { font-size: 10px; color: rgba(6,182,212,0.7); letter-spacing: 0.08em; text-transform: uppercase; }
+
+/* ── Zone badge ──────────────────────────────────────────────────────────── */
+.zone-badge {
+  display: flex; align-items: center; gap: 8px;
+  padding: 10px 12px; border-radius: 10px;
+  border: 1px solid; transition: all 0.3s;
+}
+.zone-dot { width: 9px; height: 9px; border-radius: 50%; flex-shrink: 0; }
+.zone-label { font-size: 13px; font-weight: 700; letter-spacing: 0.1em; text-transform: uppercase; flex-shrink: 0; }
+.zone-tag   { font-size: 10px; color: var(--text-2); margin-left: auto; }
+
+.zone-danger  { background: rgba(239,68,68,0.12);   border-color: rgba(239,68,68,0.4);   color: #fca5a5; }
+.zone-warning { background: rgba(245,158,11,0.12);  border-color: rgba(245,158,11,0.4);  color: #fcd34d; }
+.zone-safe    { background: rgba(34,197,94,0.08);   border-color: rgba(34,197,94,0.3);   color: #86efac; }
+.zone-unknown { background: rgba(71,85,105,0.2);    border-color: rgba(71,85,105,0.4);   color: #94a3b8; }
+
+.zone-danger-dot  { background: var(--red);    animation: pulseDot 1s ease-in-out infinite; }
+.zone-warning-dot { background: var(--yellow); animation: pulseDot 1.5s ease-in-out infinite; }
+.zone-safe-dot    { background: var(--green);  }
+.zone-unknown-dot { background: #64748b; }
+
+@keyframes pulseDot { 0%,100% { opacity: 1; } 50% { opacity: 0.4; } }
+
+/* ── Status row ──────────────────────────────────────────────────────────── */
+.status-row {
+  display: flex; align-items: center; gap: 8px;
+  padding: 7px 10px; border-radius: 8px;
+  background: rgba(255,255,255,0.03); border: 1px solid var(--border);
+  font-size: 12px;
+}
+.status-row.status-stale { background: rgba(245,158,11,0.08); border-color: rgba(245,158,11,0.3); }
+
+.status-dot { width: 7px; height: 7px; border-radius: 50%; flex-shrink: 0; }
+.status-live    { background: var(--green); animation: pulseDot 2s infinite; }
+.status-offline { background: var(--red); }
+.status-error   { background: var(--yellow); }
+.status-connecting { background: #64748b; animation: pulseDot 1.5s infinite; }
+
+.status-label { color: var(--text-1); font-weight: 500; }
+.status-age   { color: var(--text-3); font-size: 11px; margin-left: auto; }
+
+/* ── Metric cards ────────────────────────────────────────────────────────── */
+.metrics { display: flex; flex-direction: column; gap: 8px; }
+
+.metric-card {
+  display: flex; align-items: center; gap: 10px;
+  padding: 10px 12px; border-radius: 10px;
+  background: var(--bg-card); border: 1px solid;
+  transition: all 0.3s;
+}
+.metric-alert { animation: pulseCard 2s ease-in-out infinite; }
+
+@keyframes pulseCard { 0%,100% { opacity: 1; } 50% { opacity: 0.8; } }
+
+.metric-cyan   { border-color: rgba(6,182,212,0.3);   box-shadow: 0 0 12px rgba(6,182,212,0.06); }
+.metric-green  { border-color: rgba(34,197,94,0.3);   box-shadow: 0 0 12px rgba(34,197,94,0.06); }
+.metric-amber  { border-color: rgba(245,158,11,0.4);  box-shadow: 0 0 12px rgba(245,158,11,0.1); }
+.metric-red    { border-color: rgba(239,68,68,0.4);   box-shadow: 0 0 12px rgba(239,68,68,0.1); }
+
+.metric-icon {
+  width: 34px; height: 34px; flex-shrink: 0;
+  border-radius: 8px; display: flex; align-items: center; justify-content: center;
+}
+.metric-icon svg { width: 18px; height: 18px; }
+
+.metric-icon-cyan   { background: linear-gradient(135deg, #06b6d4, #0891b2); color: white; }
+.metric-icon-green  { background: linear-gradient(135deg, #22c55e, #16a34a); color: white; }
+.metric-icon-amber  { background: linear-gradient(135deg, #f59e0b, #d97706); color: white; }
+.metric-icon-red    { background: linear-gradient(135deg, #ef4444, #dc2626); color: white; }
+
+.metric-body   { min-width: 0; flex: 1; }
+.metric-label  { font-size: 10px; text-transform: uppercase; letter-spacing: 0.07em; color: var(--text-3); line-height: 1; margin-bottom: 2px; }
+.metric-value  { font-size: 14px; font-family: "Courier New", monospace; font-weight: 600; color: var(--text-1); }
+.metric-sub    { font-size: 11px; color: var(--text-2); margin-top: 1px; }
+
+/* ── Follow button ───────────────────────────────────────────────────────── */
+.follow-btn {
+  display: flex; align-items: center; gap: 8px;
+  padding: 9px 14px; border-radius: 10px;
+  border: 1.5px solid rgba(6,182,212,0.35);
+  background: rgba(6,182,212,0.08);
+  color: var(--text-2); font-size: 13px; font-weight: 500;
+  cursor: pointer; transition: all 0.25s; width: 100%; text-align: left;
+}
+.follow-btn svg { width: 16px; height: 16px; flex-shrink: 0; }
+.follow-btn:hover { border-color: rgba(6,182,212,0.6); color: var(--cyan); background: rgba(6,182,212,0.14); }
+.follow-btn-active {
+  border-color: rgba(34,197,94,0.5); background: rgba(34,197,94,0.1);
+  color: var(--green); box-shadow: 0 0 12px rgba(34,197,94,0.15);
 }
