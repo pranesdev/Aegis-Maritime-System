@@ -106,17 +106,45 @@ app.get('/api/location', async (req, res) => {
 // ─── 5. GET ALL HISTORY ───────────────────────────────────────────────────────
 app.get('/api/location/history', async (req, res) => {
   try {
-    const all = await Boat.find().sort({ timestamp: -1 }).limit(100);
+    const query = {};
+    if (req.query.boatId) query.boatId = String(req.query.boatId);
+    const all = await Boat.find(query).sort({ timestamp: -1 }).limit(200);
     res.json(all);
   } catch (err) {
     res.status(500).json({ error: 'Failed to fetch history' });
   }
 });
 
+// ─── 5b. GET LATEST LOCATION FOR EACH BOAT ─────────────────────────────────
+app.get('/api/location/latest', async (req, res) => {
+  try {
+    const latestPerBoat = await Boat.aggregate([
+      { $sort: { timestamp: -1 } },
+      {
+        $group: {
+          _id: '$boatId',
+          boatId: { $first: '$boatId' },
+          lat: { $first: '$lat' },
+          lon: { $first: '$lon' },
+          distance: { $first: '$distance' },
+          zone: { $first: '$zone' },
+          timestamp: { $first: '$timestamp' },
+        }
+      },
+      { $sort: { boatId: 1 } }
+    ]);
+    res.json(latestPerBoat);
+  } catch (err) {
+    res.status(500).json({ error: 'Failed to fetch latest boat locations' });
+  }
+});
+
 // ─── 6. GET ALERT EVENTS ─────────────────────────────────────────────────────
 app.get('/api/alerts', async (req, res) => {
   try {
-    const alerts = await AlertEvent.find().sort({ timestamp: -1 }).limit(50);
+    const query = {};
+    if (req.query.boatId) query.boatId = String(req.query.boatId);
+    const alerts = await AlertEvent.find(query).sort({ timestamp: -1 }).limit(100);
     res.json(alerts);
   } catch (err) {
     res.status(500).json({ error: 'Failed to fetch alerts' });

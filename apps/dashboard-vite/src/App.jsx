@@ -6,6 +6,18 @@ const BOUNDARY_POINTS = [
   [9.50, 80.30], [9.70, 80.20], [9.95, 80.10], [10.15, 79.95], [10.35, 79.80],
 ];
 
+const GEOFENCE_CENTER = [9.35, 79.49];
+const GEOFENCE_THRESHOLDS = {
+  SAFE_KM: 12,
+  WARNING_KM: 25,
+};
+
+const ZONE_MESSAGES = {
+  SAFE: "You are in safe waters",
+  WARNING: "Approaching restricted maritime boundary",
+  DANGER: "You have crossed the maritime boundary! Immediate action required",
+};
+
 const MAX_PATH = 80;
 
 function formatAge(ms) {
@@ -14,6 +26,25 @@ function formatAge(ms) {
   const m = Math.floor(s / 60);
   if (m < 60) return `${m}m ago`;
   return `${Math.floor(m / 60)}h ago`;
+}
+
+function haversineDistanceKm(lat1, lon1, lat2, lon2) {
+  const R = 6371;
+  const dLat = ((lat2 - lat1) * Math.PI) / 180;
+  const dLon = ((lon2 - lon1) * Math.PI) / 180;
+  const a =
+    Math.sin(dLat / 2) ** 2 +
+    Math.cos((lat1 * Math.PI) / 180) * Math.cos((lat2 * Math.PI) / 180) * Math.sin(dLon / 2) ** 2;
+  return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+}
+
+function getGeofenceStatus(lat, lon) {
+  const distanceKm = haversineDistanceKm(lat, lon, GEOFENCE_CENTER[0], GEOFENCE_CENTER[1]);
+  const zone =
+    distanceKm < GEOFENCE_THRESHOLDS.SAFE_KM ? "SAFE" :
+    distanceKm < GEOFENCE_THRESHOLDS.WARNING_KM ? "WARNING" :
+    "DANGER";
+  return { zone, distanceKm };
 }
 
 export default function App() {
@@ -25,14 +56,42 @@ export default function App() {
   const [status, setStatus]             = useState("connecting");
   const [lastUpdateMs, setLastUpdateMs] = useState(null);
   const [followVessel, setFollowVessel] = useState(true);
+  const [zoneToasts, setZoneToasts]     = useState([]);
+  const [dangerModalOpen, setDangerModalOpen] = useState(false);
   const [, setTick]                     = useState(0);
   const prevPosRef                      = useRef(null);
   const prevTimeRef                     = useRef(null);
+  const prevZoneRef                     = useRef("UNKNOWN");
 
   useEffect(() => {
     const id = setInterval(() => setTick(t => t + 1), 5000);
     return () => clearInterval(id);
   }, []);
+
+  useEffect(() => {
+    const previousZone = prevZoneRef.current;
+    if (zone === previousZone) return;
+    if (zone === "UNKNOWN") {
+      prevZoneRef.current = zone;
+      return;
+    }
+
+    const toast = {
+      id: Date.now() + Math.floor(Math.random() * 1000),
+      zone,
+      message: ZONE_MESSAGES[zone],
+    };
+
+    setZoneToasts((prev) => [...prev, toast].slice(-4));
+    const timeoutId = window.setTimeout(() => {
+      setZoneToasts((prev) => prev.filter((item) => item.id !== toast.id));
+    }, 5000);
+
+    if (zone === "DANGER") setDangerModalOpen(true);
+    prevZoneRef.current = zone;
+
+    return () => window.clearTimeout(timeoutId);
+  }, [zone]);
 
   useEffect(() => {
     const fetchTelemetry = async () => {
@@ -69,8 +128,9 @@ export default function App() {
             const next = [...prev, [lat, lon]];
             return next.length > MAX_PATH ? next.slice(next.length - MAX_PATH) : next;
           });
-          setDistance(Number(data.distance ?? 0));
-          setZone(String(data.zone ?? "UNKNOWN"));
+          const geofence = getGeofenceStatus(lat, lon);
+          setDistance(geofence.distanceKm);
+          setZone(geofence.zone);
           setLastUpdateMs(now);
           setStatus("live");
         } else {
@@ -101,6 +161,29 @@ export default function App() {
 
   return (
     <div className="dashboard-root">
+      <div className="zone-toast-stack" aria-live="polite">
+        {zoneToasts.map((toast) => (
+          <div key={toast.id} className={`zone-toast zone-toast-${toast.zone.toLowerCase()}`} role="status">
+            <p className="zone-toast-title">{toast.zone}</p>
+            <p className="zone-toast-message">{toast.message}</p>
+          </div>
+        ))}
+      </div>
+
+      {dangerModalOpen && zone === "DANGER" && (
+        <div className="zone-modal-backdrop" role="presentation">
+          <div className="zone-modal" role="alertdialog" aria-modal="true" aria-label="Danger zone alert">
+            <p className="zone-modal-kicker">Danger Alert</p>
+            <h2 className="zone-modal-title">Maritime Boundary Breach</h2>
+            <p className="zone-modal-text">{ZONE_MESSAGES.DANGER}</p>
+            <p className="zone-modal-sub">Immediate course correction is required to return to safe waters.</p>
+            <div className="zone-modal-actions">
+              <button className="zone-modal-btn" onClick={() => setDangerModalOpen(false)}>Acknowledge</button>
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* Sidebar */}
       <aside className={`sidebar ${zoneCls}-border`}>
         {/* Brand */}
@@ -191,6 +274,8 @@ export default function App() {
           followVessel={followVessel}
           onManualPan={() => setFollowVessel(false)}
           zone={zone}
+          geofenceCenter={GEOFENCE_CENTER}
+          geofenceRings={GEOFENCE_THRESHOLDS}
         />
       </main>
     </div>

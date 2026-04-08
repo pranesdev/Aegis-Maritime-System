@@ -1,5 +1,5 @@
 // src/components/MapView.jsx
-import { MapContainer, TileLayer, Polyline, Marker, useMap, useMapEvents } from 'react-leaflet';
+import { MapContainer, TileLayer, Polyline, Marker, Circle, useMap, useMapEvents } from 'react-leaflet';
 import L from 'leaflet';
 import 'leaflet/dist/leaflet.css';
 import { useEffect } from 'react';
@@ -16,7 +16,7 @@ function createVesselIcon(zone) {
     html: `
       <div style="position:relative;width:40px;height:40px;">
         <div style="position:absolute;inset:-4px;border-radius:50%;background:${color};opacity:0.2;animation:aegisPing 1.5s infinite;"></div>
-        <svg width="40" height="40" viewBox="0 0 24 24" style="filter:drop-shadow(0 3px 6px rgba(0,0,0,0.5))">
+        <svg width="40" height="40" viewBox="0 0 24 24" style="position:absolute;left:0;top:0;display:block;filter:drop-shadow(0 3px 6px rgba(0,0,0,0.5))">
           <defs>
             <linearGradient id="vg${zone}" x1="0%" y1="0%" x2="100%" y2="100%">
               <stop offset="0%" stop-color="${color}"/>
@@ -27,7 +27,7 @@ function createVesselIcon(zone) {
         </svg>
       </div>`,
     iconSize: [40, 40],
-    iconAnchor: [20, 40],
+    iconAnchor: [20, 20],
   });
 }
 
@@ -47,9 +47,20 @@ function DragDetector({ onDrag }) {
   return null;
 }
 
-export default function MapView({ boatPosition, boundaryPoints, boatPath, followVessel = true, onManualPan, zone = 'SAFE' }) {
+export default function MapView({
+  boatPosition,
+  boundaryPoints,
+  boatPath,
+  followVessel = true,
+  onManualPan,
+  zone = 'SAFE',
+  geofenceCenter,
+  geofenceRings,
+}) {
   const vesselIcon = useMemo(() => createVesselIcon(zone), [zone]);
-  const boundaryColor = zone === 'DANGER' ? '#ef4444' : zone === 'WARNING' ? '#f59e0b' : '#ef4444';
+  const boundaryColor = zone === 'DANGER' ? '#ef4444' : zone === 'WARNING' ? '#f59e0b' : '#22c55e';
+  const warningColor = zone === 'WARNING' || zone === 'DANGER' ? '#fde047' : '#f59e0b';
+  const dangerColor = zone === 'DANGER' ? '#ef4444' : '#f97316';
 
   return (
     <MapContainer 
@@ -73,11 +84,27 @@ export default function MapView({ boatPosition, boundaryPoints, boatPath, follow
         positions={boundaryPoints}
         pathOptions={{ color: boundaryColor, weight: 3.5, dashArray: '12, 8', opacity: 0.9 }}
       />
+
+      {/* Radius-based geofence rings (warning and danger) */}
+      {geofenceCenter && geofenceRings && (
+        <>
+          <Circle
+            center={geofenceCenter}
+            radius={geofenceRings.WARNING_KM * 1000}
+            pathOptions={{ color: warningColor, weight: zone === 'WARNING' || zone === 'DANGER' ? 3.5 : 2.5, dashArray: '10, 8', fillOpacity: 0.06 }}
+          />
+          <Circle
+            center={geofenceCenter}
+            radius={geofenceRings.DANGER_KM * 1000}
+            pathOptions={{ color: dangerColor, weight: zone === 'DANGER' ? 3.8 : 2.5, dashArray: '8, 6', fillOpacity: zone === 'DANGER' ? 0.14 : 0.08 }}
+          />
+        </>
+      )}
       {/* Path trail */}
       {boatPath.length > 1 && (
         <Polyline
           positions={boatPath}
-          pathOptions={{ color: '#38bdf8', weight: 2.5, opacity: 0.7 }}
+          pathOptions={{ color: '#38bdf8', weight: 2.5, opacity: 0.7, pane: 'overlayPane', interactive: false }}
         />
       )}
       <Marker position={boatPosition} icon={vesselIcon} />

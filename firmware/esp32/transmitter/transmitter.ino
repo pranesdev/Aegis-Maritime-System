@@ -18,7 +18,8 @@
 #define BUZZER_PIN 15
 
 // --- ZONE THRESHOLDS ---
-const float DANGER_KM  = 10.0;
+// Near boundary/coast is SAFE, then WARNING, then DANGER farther offshore.
+const float SAFE_KM    = 10.0;
 const float WARNING_KM = 20.0;
 
 // IMBL boundary coordinates (Palk Strait) — matches dashboard
@@ -128,7 +129,13 @@ void loop() {
   }
   
   float dist = distanceToBoundary(currentLat, currentLon);
-  currentZone = (dist > WARNING_KM) ? "SAFE" : (dist > DANGER_KM) ? "WARNING" : "DANGER";
+  if (dist <= SAFE_KM) {
+    currentZone = "SAFE";
+  } else if (dist <= WARNING_KM) {
+    currentZone = "WARNING";
+  } else {
+    currentZone = "DANGER";
+  }
   updateAlert();
   
   String zone = currentZone;

@@ -1,9 +1,17 @@
 ﻿"use client"
 
-import { useState, useCallback, useEffect } from "react"
+import { useState, useCallback, useEffect, useRef } from "react"
 import dynamic from "next/dynamic"
 
 type AlertEntry = { zone: string; lat: number; lon: number; timestamp: string }
+type ZoneStatus = "SAFE" | "WARNING" | "DANGER" | "UNKNOWN"
+type BoatSummary = { boatId: string; lat: number; lon: number; zone: ZoneStatus }
+
+const ZONE_MESSAGES: Record<Exclude<ZoneStatus, "UNKNOWN">, string> = {
+  SAFE: "You are in safe waters",
+  WARNING: "Approaching restricted maritime boundary",
+  DANGER: "You have crossed the maritime boundary! Immediate action required",
+}
 
 const SAMPLE_ALERTS: AlertEntry[] = [
   { zone: "SAFE",    lat: 9.8012, lon: 79.3045, timestamp: "2026-03-31T18:05:00.000Z" },
@@ -43,6 +51,20 @@ const ZONE_CONFIG = {
   UNKNOWN: { dot: "bg-gray-600",   text: "text-gray-500",   border: "border-gray-700/50",   activeBg: "",                 glow: "100,116,139", badge: "bg-gray-900/50 border-gray-700/50 text-gray-500",       alertBg: "",                                     alertText: ""                },
 }
 
+const ZONE_SEVERITY: Record<ZoneStatus, number> = {
+  UNKNOWN: -1,
+  SAFE: 0,
+  WARNING: 1,
+  DANGER: 2,
+}
+
+function getCrossingAlertZone(previousZone: ZoneStatus, nextZone: ZoneStatus): Exclude<ZoneStatus, "SAFE" | "UNKNOWN"> | null {
+  if (nextZone !== "WARNING" && nextZone !== "DANGER") return null
+  if (previousZone === "UNKNOWN") return null
+  if (ZONE_SEVERITY[nextZone] <= ZONE_SEVERITY[previousZone]) return null
+  return nextZone
+}
+
 export default function MaritimeDashboard() {
   const [vesselId,          setVesselId]          = useState("")
   const [currentLocation,   setCurrentLocation]   = useState("Fetching...")
@@ -50,14 +72,22 @@ export default function MaritimeDashboard() {
   const [currentSpeed,      setCurrentSpeed]      = useState("--")
   const [serverStatus,      setServerStatus]      = useState("Connecting...")
   const [isNearBoundary,    setIsNearBoundary]    = useState(false)
-  const [zone,              setZone]              = useState<"SAFE"|"WARNING"|"DANGER"|"UNKNOWN">("UNKNOWN")
+  const [zone,              setZone]              = useState<ZoneStatus>("UNKNOWN")
   const [nearestEEZ,        setNearestEEZ]        = useState("Calculating...")
   const [boatId,            setBoatId]            = useState("BOAT1")
+  const [boats,             setBoats]             = useState<BoatSummary[]>([])
+  const [selectedBoatId,    setSelectedBoatId]    = useState<string | null>(null)
+  const [selectedBoat,      setSelectedBoat]      = useState<BoatSummary | null>(null)
   const [alerts,            setAlerts]            = useState<AlertEntry[]>([])
+  const [zoneToasts,        setZoneToasts]        = useState<Array<{ id: number; zone: Exclude<ZoneStatus, "UNKNOWN">; message: string }>>([])
+  const [dangerModalOpen,   setDangerModalOpen]   = useState(false)
   const [demoMode,          setDemoMode]          = useState(false)
   const [showBoundaryMenu,  setShowBoundaryMenu]  = useState(false)
+  const [isMobileViewport,  setIsMobileViewport]  = useState(false)
+  const [isMobilePanelOpen, setIsMobilePanelOpen] = useState(false)
   const [lastUpdate,        setLastUpdate]        = useState<Date | null>(null)
   const [, setTick]                               = useState(0)
+  const previousZoneRef                           = useRef<ZoneStatus>("UNKNOWN")
 
   const handleLocationUpdate = useCallback((lat: number, lng: number) => {
     setCurrentLocation(`${lat.toFixed(4)}\u00b0 N, ${lng.toFixed(4)}\u00b0 E`)
@@ -74,9 +104,32 @@ export default function MaritimeDashboard() {
   }, [])
 
   const handleZoneUpdate = useCallback((z: string) => {
-    setZone(z as "SAFE"|"WARNING"|"DANGER"|"UNKNOWN")
+    setZone(z as ZoneStatus)
   }, [])
   const handleEEZUpdate = useCallback((name: string) => setNearestEEZ(name), [])
+
+  const handleBoatSelect = useCallback((boat: BoatSummary) => {
+    setSelectedBoat(boat)
+    setSelectedBoatId(boat.boatId)
+    setBoatId(boat.boatId)
+  }, [])
+
+  const handleBoatsUpdate = useCallback((nextBoats: BoatSummary[]) => {
+    setBoats(nextBoats)
+    if (!selectedBoatId && nextBoats.length > 0) {
+      setSelectedBoatId(nextBoats[0].boatId)
+      setSelectedBoat(nextBoats[0])
+      setBoatId(nextBoats[0].boatId)
+      return
+    }
+    if (selectedBoatId) {
+      const selected = nextBoats.find((b) => b.boatId === selectedBoatId) || null
+      if (selected) {
+        setSelectedBoat(selected)
+        setBoatId(selected.boatId)
+      }
+    }
+  }, [selectedBoatId])
 
   useEffect(() => {
     const id = setInterval(() => setTick(t => t + 1), 15_000)
@@ -84,18 +137,71 @@ export default function MaritimeDashboard() {
   }, [])
 
   useEffect(() => {
+    const mediaQuery = window.matchMedia("(max-width: 1023px)")
+    const syncViewport = () => {
+      const mobile = mediaQuery.matches
+      setIsMobileViewport(mobile)
+      setIsMobilePanelOpen(!mobile)
+    }
+    syncViewport()
+    mediaQuery.addEventListener("change", syncViewport)
+    return () => mediaQuery.removeEventListener("change", syncViewport)
+  }, [])
+
+  useEffect(() => {
+    const previousZone = previousZoneRef.current
+    if (zone === previousZone) return
+    const alertZone = getCrossingAlertZone(previousZone, zone)
+    previousZoneRef.current = zone
+    if (!alertZone) return
+
+    const toast = {
+      id: Date.now() + Math.floor(Math.random() * 1000),
+      zone: alertZone,
+      message: ZONE_MESSAGES[alertZone],
+    }
+
+    setZoneToasts([toast])
+    const timeoutId = window.setTimeout(() => {
+      setZoneToasts((prev) => prev.filter((item) => item.id !== toast.id))
+    }, 5000)
+
+    if (alertZone === "DANGER") setDangerModalOpen(true)
+
+    return () => window.clearTimeout(timeoutId)
+  }, [zone])
+
+  useEffect(() => {
     const BACKEND_URL = process.env.NEXT_PUBLIC_BACKEND_URL || "http://localhost:5000"
     const load = async () => {
       try {
-        const [alertRes, locRes] = await Promise.all([
+        const [alertRes, locRes, latestRes] = await Promise.all([
           fetch(`${BACKEND_URL}/api/alerts`),
           fetch(`${BACKEND_URL}/api/location`),
+          fetch(`${BACKEND_URL}/api/location/latest`),
         ])
         if (alertRes.ok) setAlerts(await alertRes.json())
         if (locRes.ok) {
           const loc = await locRes.json()
           if (loc.boatId) setBoatId(loc.boatId)
-          if (loc.zone)   setZone(loc.zone)
+        }
+        if (latestRes.ok) {
+          const rows = await latestRes.json()
+          if (Array.isArray(rows)) {
+            const normalized = rows
+              .filter((r) => r?.lat !== undefined && r?.lon !== undefined)
+              .map((r) => ({
+                boatId: String(r.boatId || "BOAT1"),
+                lat: Number(r.lat),
+                lon: Number(r.lon),
+                zone: (r.zone === "SAFE" || r.zone === "WARNING" || r.zone === "DANGER") ? r.zone : "UNKNOWN",
+              }))
+            setBoats(normalized)
+            if (normalized.length > 0 && !selectedBoatId) {
+              setSelectedBoat(normalized[0])
+              setSelectedBoatId(normalized[0].boatId)
+            }
+          }
         }
       } catch { /* backend offline */ }
     }
@@ -106,20 +212,76 @@ export default function MaritimeDashboard() {
 
   const handleSearch = () => {
     if (!vesselId.trim()) return
-    setCurrentLocation("Searching...")
-    setTimeout(() => {
-      setCurrentLocation("8.9123\u00b0 N, 78.4567\u00b0 E")
-      setProximityToBorder("8.3 km")
-      setCurrentSpeed("10.1 kn")
-    }, 1000)
+    const targetId = vesselId.trim().toUpperCase()
+    const found = boats.find((b) => b.boatId.toUpperCase() === targetId)
+    if (!found) {
+      setServerStatus(`Boat ${targetId} not found`)
+      return
+    }
+    setSelectedBoatId(found.boatId)
+    setSelectedBoat(found)
+    setBoatId(found.boatId)
+    setServerStatus("Boat selected")
   }
 
   const isConnected   = serverStatus === "Backend Connected" || serverStatus === "Demo Mode Active"
   const zoneCfg       = ZONE_CONFIG[zone] ?? ZONE_CONFIG.UNKNOWN
   const displayAlerts = alerts.length > 0 ? alerts : SAMPLE_ALERTS
+  const showPanelContent = !isMobileViewport || isMobilePanelOpen
+  const compactAlertText = zone === "DANGER"
+    ? "Boundary crossed"
+    : zone === "WARNING"
+      ? "Boundary nearby"
+      : "In safe waters"
+  const filteredBoats = boats.filter((b) => b.boatId.toLowerCase().includes(vesselId.trim().toLowerCase()))
+  const safeCount = boats.filter((b) => b.zone === "SAFE").length
+  const warningCount = boats.filter((b) => b.zone === "WARNING").length
+  const dangerCount = boats.filter((b) => b.zone === "DANGER").length
 
   return (
     <div className="min-h-screen text-white font-sans flex flex-col bg-[#020817]">
+      <div className="fixed top-3 right-3 z-[3000] flex flex-col gap-2 pointer-events-none w-[min(92vw,420px)]">
+        {zoneToasts.map((toast) => {
+          const toastStyle = toast.zone === "DANGER"
+            ? "border-red-500/50 bg-red-950/90 text-red-100"
+            : toast.zone === "WARNING"
+              ? "border-yellow-500/50 bg-yellow-950/90 text-yellow-100"
+              : "border-green-500/50 bg-green-950/90 text-green-100"
+
+          return (
+            <div key={toast.id} role="status" aria-live="polite"
+              className={`pointer-events-auto rounded-lg border px-3 py-2 shadow-[0_8px_30px_rgba(0,0,0,0.45)] backdrop-blur-sm ${toastStyle}`}>
+              <p className="text-[11px] md:text-xs font-bold uppercase tracking-wider opacity-90">{toast.zone}</p>
+              <p className="text-xs md:text-sm font-semibold">{toast.message}</p>
+            </div>
+          )
+        })}
+      </div>
+
+      {dangerModalOpen && zone === "DANGER" && (
+        <div className="fixed inset-0 z-[3200] bg-black/70 backdrop-blur-[2px] flex items-center justify-center p-4">
+          <div role="alertdialog" aria-modal="true" aria-label="Danger zone alert"
+            className="w-full max-w-lg rounded-xl border border-red-500/50 bg-[#1b0a0a] shadow-[0_14px_60px_rgba(239,68,68,0.3)]">
+            <div className="px-5 py-4 border-b border-red-500/30">
+              <p className="text-xs uppercase tracking-[0.2em] text-red-300 font-bold">Danger Alert</p>
+              <h3 className="text-lg md:text-xl font-black text-red-200 mt-1">Maritime Boundary Breach</h3>
+            </div>
+            <div className="px-5 py-4">
+              <p className="text-sm md:text-base text-red-100 font-semibold">{ZONE_MESSAGES.DANGER}</p>
+              <p className="text-xs md:text-sm text-red-200/80 mt-2">Vessel {boatId} is currently inside danger waters. Initiate return protocol immediately.</p>
+            </div>
+            <div className="px-5 py-4 border-t border-red-500/30 flex justify-end">
+              <button
+                onClick={() => setDangerModalOpen(false)}
+                className="px-3 py-2 rounded-md text-sm font-semibold bg-red-600 hover:bg-red-500 text-white transition-colors"
+              >
+                Acknowledge
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
       <div className="fixed inset-0 pointer-events-none" aria-hidden="true">
         <div className="absolute inset-0 bg-gradient-to-br from-[#020817] via-[#0a1628] to-[#071525]" />
         <div className="absolute inset-0 bg-[radial-gradient(ellipse_at_top_left,_rgba(6,182,212,0.10)_0%,_transparent_50%)]" />
@@ -127,6 +289,7 @@ export default function MaritimeDashboard() {
       </div>
 
       <div className="relative z-10 flex flex-col flex-1 min-h-0">
+<<<<<<< Updated upstream
         {/* Header */}
         <header className="flex items-center justify-between px-6 py-4 border-b border-[#1e3a5f]/50 gap-4 flex-wrap">
           <div className="flex items-center gap-3">
@@ -143,6 +306,21 @@ export default function MaritimeDashboard() {
 
           <div className="flex items-center gap-2 flex-wrap">
             <div className="flex items-center bg-[#0d2137] rounded-lg overflow-hidden border border-[#1e3a5f]">
+=======
+        {isMobileViewport && (
+          <button
+            onClick={() => setIsMobilePanelOpen((open) => !open)}
+            className="fixed top-[60px] left-3 z-[2600] lg:hidden px-3 py-2 rounded-lg border border-cyan-500/40 bg-[#0d2137]/90 backdrop-blur-sm text-cyan-200 text-xs font-semibold uppercase tracking-wider shadow-[0_6px_20px_rgba(0,0,0,0.45)] transition-all duration-300"
+          >
+            {isMobilePanelOpen ? "Map Only" : "Show Panel"}
+          </button>
+        )}
+
+        {/* Header — operational controls (logo/title now in Navbar) */}
+        <header className={`flex items-center justify-end px-3 md:px-6 py-2 md:py-3 border-b border-[#1e3a5f]/50 gap-2 flex-wrap transition-all duration-300 overflow-hidden ${showPanelContent ? "max-h-[140px] opacity-100" : "max-h-0 opacity-0 border-b-0 py-0"}`}>
+          <div className="flex items-center gap-1 md:gap-2 flex-wrap w-full md:w-auto">
+            <div className="flex items-center bg-[#0d2137] rounded-lg overflow-hidden border border-[#1e3a5f] flex-1 md:flex-none">
+>>>>>>> Stashed changes
               <input
                 type="text"
                 placeholder="Vessel ID..."
@@ -159,7 +337,30 @@ export default function MaritimeDashboard() {
               </button>
             </div>
 
+<<<<<<< Updated upstream
             <div className="flex items-center gap-2 px-3.5 py-2 rounded-lg bg-[#0d2137] border border-[#1e3a5f]">
+=======
+            {vesselId.trim().length > 0 && (
+              <div className="w-full md:w-auto md:min-w-[220px] max-h-24 overflow-y-auto rounded-lg border border-[#1e3a5f] bg-[#0d2137] px-2 py-1">
+                {filteredBoats.length === 0 && <p className="text-xs text-gray-500 py-1">No matching boats</p>}
+                {filteredBoats.map((b) => (
+                  <button
+                    key={b.boatId}
+                    onClick={() => {
+                      setSelectedBoatId(b.boatId)
+                      setSelectedBoat(b)
+                      setBoatId(b.boatId)
+                    }}
+                    className={`w-full text-left text-xs px-2 py-1 rounded ${selectedBoatId === b.boatId ? "bg-cyan-900/40 text-cyan-200" : "text-gray-300 hover:bg-[#1e3a5f]/40"}`}
+                  >
+                    {b.boatId} · {b.zone}
+                  </button>
+                ))}
+              </div>
+            )}
+
+            <div className="hidden md:flex items-center gap-2 px-3.5 py-2 rounded-lg bg-[#0d2137] border border-[#1e3a5f] flex-shrink-0">
+>>>>>>> Stashed changes
               <div className={`w-2 h-2 rounded-full flex-shrink-0 ${isConnected ? "bg-green-400 animate-pulse" : "bg-red-500"}`} />
               <span className="text-sm font-medium text-gray-300">{boatId}</span>
               <span className={`text-sm ${isConnected ? "text-green-400" : "text-red-400"}`}>{serverStatus}</span>
@@ -182,9 +383,15 @@ export default function MaritimeDashboard() {
         </header>
 
         {/* Hardware + Zone Status Bar */}
+<<<<<<< Updated upstream
         <div className="flex items-center gap-6 px-6 py-2.5 border-b border-[#1e3a5f]/30 bg-[#071525]/80 flex-wrap">
           <div className="flex items-center gap-2">
             <div className={`relative w-4 h-4 rounded-full flex-shrink-0 transition-all duration-300 ${
+=======
+        <div className={`flex items-center gap-2 md:gap-6 px-3 md:px-6 py-2 md:py-2.5 border-b border-[#1e3a5f]/30 bg-[#071525]/80 flex-wrap text-xs md:text-base transition-all duration-300 overflow-hidden ${showPanelContent ? "max-h-[160px] opacity-100" : "max-h-0 opacity-0 border-b-0 py-0"}`}>
+          <div className="flex items-center gap-1 md:gap-2 flex-shrink-0">
+            <div className={`relative w-3 md:w-4 h-3 md:h-4 rounded-full flex-shrink-0 transition-all duration-300 ${
+>>>>>>> Stashed changes
               zone === "DANGER" ? "bg-red-500 shadow-[0_0_10px_3px_rgba(239,68,68,0.6)]"
               : zone === "WARNING" ? "bg-yellow-400 shadow-[0_0_10px_3px_rgba(250,204,21,0.5)] animate-pulse"
               : "bg-gray-700 border border-gray-600"}`} />
@@ -224,10 +431,24 @@ export default function MaritimeDashboard() {
         </div>
 
         {/* Zone Alert Banner */}
+<<<<<<< Updated upstream
         {(zone === "DANGER" || zone === "WARNING") && (
           <div role="alert" className={`flex items-center gap-3 px-6 py-2.5 border-b ${zoneCfg.alertBg}`}>
             <div className={`w-2 h-2 rounded-full animate-pulse flex-shrink-0 ${zoneCfg.dot}`} />
             <span className={`text-base font-semibold ${zoneCfg.alertText}`}>
+=======
+        {showPanelContent && (zone === "DANGER" || zone === "WARNING") && (
+          <div role="alert" className={`flex flex-col md:flex-row items-start md:items-center gap-2 md:gap-3 px-3 md:px-6 py-2 md:py-2.5 border-b ${zoneCfg.alertBg}`}>
+            <div className="flex items-center gap-2 flex-shrink-0">
+              <div className={`w-2 h-2 rounded-full animate-pulse flex-shrink-0 ${zoneCfg.dot}`} />
+              <span className={`text-xs md:text-base font-semibold ${zoneCfg.alertText}`}>
+                {zone === "DANGER"
+                  ? "DANGER ZONE"
+                  : "WARNING ZONE"}
+              </span>
+            </div>
+            <span className={`text-xs md:text-sm ${zoneCfg.alertText} hidden md:inline`}>
+>>>>>>> Stashed changes
               {zone === "DANGER"
                 ? "DANGER ZONE -- Vessel has crossed into restricted waters!"
                 : "WARNING -- Vessel is approaching a boundary zone"}
@@ -240,9 +461,15 @@ export default function MaritimeDashboard() {
         )}
 
         {/* Main Content */}
+<<<<<<< Updated upstream
         <div className="flex flex-col lg:flex-row flex-1 min-h-0 p-5 gap-5">
           {/* Sidebar metric cards */}
           <div className="flex flex-row lg:flex-col gap-3 lg:w-72 xl:w-80 flex-shrink-0 flex-wrap lg:flex-nowrap">
+=======
+        <div className={`flex flex-col lg:flex-row flex-1 min-h-0 gap-2 md:gap-5 transition-all duration-300 ${showPanelContent ? "p-2 md:p-5" : "p-0"}`}>
+          {/* Sidebar metric cards */}
+          <div className={`flex flex-col md:flex-row lg:flex-col gap-2 md:gap-3 lg:w-72 xl:w-80 flex-shrink-0 order-last lg:order-first transition-all duration-300 overflow-hidden ${showPanelContent ? "max-h-[900px] opacity-100" : "max-h-0 opacity-0 pointer-events-none"}`}>
+>>>>>>> Stashed changes
             <MetricCard label="Current Location" value={currentLocation} accent="cyan"
               icon={<svg className="w-5 h-5 text-white" fill="currentColor" viewBox="0 0 24 24">
                 <path d="M12 2C8.13 2 5 5.13 5 9c0 5.25 7 13 7 13s7-7.75 7-13c0-3.87-3.13-7-7-7zm0 9.5c-1.38 0-2.5-1.12-2.5-2.5s1.12-2.5 2.5-2.5 2.5 1.12 2.5 2.5-1.12 2.5-2.5 2.5z" /></svg>} />
@@ -257,6 +484,13 @@ export default function MaritimeDashboard() {
               icon={<svg className="w-5 h-5 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                 <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2}
                   d="M3.055 11H5a2 2 0 012 2v1a2 2 0 002 2 2 2 0 012 2v2.945M8 3.935V5.5A2.5 2.5 0 0010.5 8h.5a2 2 0 012 2 2 2 0 104 0 2 2 0 012-2h1.064M15 20.488V18a2 2 0 012-2h3.064" /></svg>} />
+            <div className="rounded-md md:rounded-xl border border-[#1e3a5f]/50 bg-[#0a1f35] px-3 py-2">
+              <p className="text-[10px] uppercase tracking-widest text-gray-500">Selected Boat</p>
+              <p className="text-sm font-bold text-cyan-300">{selectedBoat?.boatId || boatId}</p>
+              <p className="text-xs text-gray-300">Lat: {selectedBoat ? selectedBoat.lat.toFixed(4) : "--"}</p>
+              <p className="text-xs text-gray-300">Lon: {selectedBoat ? selectedBoat.lon.toFixed(4) : "--"}</p>
+              <p className="text-xs text-gray-300">Zone: {selectedBoat?.zone || zone}</p>
+            </div>
           </div>
 
           {/* Map */}
@@ -269,8 +503,24 @@ export default function MaritimeDashboard() {
               onStatusUpdate={setServerStatus}
               onZoneUpdate={handleZoneUpdate}
               onEEZUpdate={handleEEZUpdate}
+              onBoatSelect={handleBoatSelect}
+              onBoatsUpdate={handleBoatsUpdate}
+              selectedBoatId={selectedBoatId}
               demoMode={demoMode}
             />
+
+            {isMobileViewport && (
+              <div className="absolute top-3 right-3 z-[1200] rounded-lg border border-cyan-500/30 bg-[#071525]/88 backdrop-blur-sm px-3 py-2 shadow-[0_8px_24px_rgba(0,0,0,0.45)]">
+                <div className="flex items-center gap-2 text-[11px] uppercase tracking-wider text-gray-400">
+                  <span className={`w-2 h-2 rounded-full ${isConnected ? "bg-green-400" : "bg-red-500"}`} />
+                  {boatId}
+                </div>
+                <p className={`text-xs font-bold mt-1 ${zoneCfg.text}`}>{zone}</p>
+                <p className="text-[11px] text-gray-300">{compactAlertText}</p>
+                <p className="text-[10px] text-gray-500">{proximityToBorder}</p>
+              </div>
+            )}
+
             {/* Status overlay */}
             <div className="absolute bottom-3 left-3 right-3 z-[1000] pointer-events-none">
               <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 rounded-xl p-4"
@@ -285,6 +535,7 @@ export default function MaritimeDashboard() {
         </div>
 
         {/* Bottom panels */}
+<<<<<<< Updated upstream
         <div className="flex flex-col lg:flex-row px-5 gap-5 pb-5">
           <div className="flex-1 rounded-xl p-5 border border-[#1e3a5f]/50 bg-[#0d2137]/70">
             <h2 className="text-sm font-bold text-cyan-400 mb-4 uppercase tracking-widest">Vessels by Zone</h2>
@@ -292,6 +543,15 @@ export default function MaritimeDashboard() {
               <ZoneCount zone="SAFE"    count={zone === "SAFE"    ? 1 : 0} active={zone === "SAFE"} />
               <ZoneCount zone="WARNING" count={zone === "WARNING" ? 1 : 0} active={zone === "WARNING"} />
               <ZoneCount zone="DANGER"  count={zone === "DANGER"  ? 1 : 0} active={zone === "DANGER"} />
+=======
+        <div className={`flex flex-col lg:flex-row px-2 md:px-5 gap-2 md:gap-5 pb-2 md:pb-5 transition-all duration-300 overflow-hidden ${showPanelContent ? "max-h-[600px] opacity-100" : "max-h-0 opacity-0 pointer-events-none pb-0"}`}>
+          <div className="flex-1 rounded-md md:rounded-xl p-3 md:p-5 border border-[#1e3a5f]/50 bg-[#0d2137]/70">
+            <h2 className="text-xs md:text-sm font-bold text-cyan-400 mb-3 md:mb-4 uppercase tracking-widest">Vessels by Zone</h2>
+            <div className="grid grid-cols-3 gap-2 md:gap-3">
+              <ZoneCount zone="SAFE"    count={safeCount} active={zone === "SAFE"} />
+              <ZoneCount zone="WARNING" count={warningCount} active={zone === "WARNING"} />
+              <ZoneCount zone="DANGER"  count={dangerCount} active={zone === "DANGER"} />
+>>>>>>> Stashed changes
             </div>
           </div>
 
@@ -307,9 +567,15 @@ export default function MaritimeDashboard() {
         </div>
 
         {/* Legend + Footer */}
+<<<<<<< Updated upstream
         <div className="px-5 pb-5">
           <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3 rounded-xl p-3 border border-[#1e3a5f]/30 bg-[#0d2137]/40 relative">
             <div className="flex flex-wrap items-center gap-x-4 gap-y-1.5">
+=======
+        <div className={`px-2 md:px-5 pb-2 md:pb-5 transition-all duration-300 overflow-hidden ${showPanelContent ? "max-h-[360px] opacity-100" : "max-h-0 opacity-0 pointer-events-none pb-0"}`}>
+          <div className="flex flex-col gap-2 md:gap-3 rounded-md md:rounded-xl p-2 md:p-3 border border-[#1e3a5f]/30 bg-[#0d2137]/40 relative">
+            <div className="flex flex-wrap items-center gap-x-2 md:gap-x-4 gap-y-1 md:gap-y-1.5">
+>>>>>>> Stashed changes
               <button
                 onClick={() => setShowBoundaryMenu((prev) => !prev)}
                 className="flex items-center gap-2 px-3 py-2 rounded-lg text-sm font-semibold uppercase tracking-wider border border-cyan-500/40 text-cyan-300 bg-[#0a1e33] hover:bg-[#102742] transition-colors"
@@ -336,12 +602,20 @@ export default function MaritimeDashboard() {
                   <h3 className="text-sm font-bold uppercase tracking-widest text-cyan-300">Tamil Nadu Maritime Boundary Guide</h3>
                   <span className="text-sm text-gray-500">Fixed-distance offshore zones</span>
                 </div>
+<<<<<<< Updated upstream
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
                   <BoundaryGuideItem color="#06b6d4" title="Tamil Nadu Coastline" subtitle="Baseline reference (shoreline)" />
                   <BoundaryGuideItem color="#f59e0b" title="Warning Zone (25 km)" subtitle="Fixed 25 km from coast, approach with caution" dashed />
                   <BoundaryGuideItem color="#f97316" title="Danger Zone (12 km)" subtitle="Fixed 12 km from coast, turn back immediately" dashed />
                   <BoundaryGuideItem color="#ef4444" title="IMBL - Palk Strait" subtitle="International maritime boundary (1974)" dashed />
                   <BoundaryGuideItem color="#ef4444" title="IMBL - Gulf of Mannar" subtitle="International maritime boundary (1976)" dashed />
+=======
+                <div className="grid grid-cols-1 gap-2 md:gap-3">
+                  <BoundaryGuideItem color="#06b6d4" title="Tamil Nadu Coastline" subtitle="Baseline reference" />
+                  <BoundaryGuideItem color="#22c55e" title="SAFE Zone (10 km)" subtitle="Monitor and maintain safe route" dashed />
+                  <BoundaryGuideItem color="#f59e0b" title="WARNING Zone (20 km)" subtitle="Approach with caution" dashed />
+                  <BoundaryGuideItem color="#ef4444" title="DANGER Zone (30 km)" subtitle="Immediate evasive action required" dashed />
+>>>>>>> Stashed changes
                 </div>
               </div>
             )}

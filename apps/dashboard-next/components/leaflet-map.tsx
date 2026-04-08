@@ -12,14 +12,27 @@ interface LeafletMapProps {
   onStatusUpdate?: (status: string) => void
   onEEZUpdate?: (name: string) => void
   onZoneUpdate?: (zone: string) => void
+  onBoatSelect?: (boat: BoatMarkerData) => void
+  onBoatsUpdate?: (boats: BoatMarkerData[]) => void
+  selectedBoatId?: string | null
   demoMode?: boolean
 }
 
-// ─── Tamil Nadu Maritime Boundaries ─────────────────────────────────────────
-// Coordinates are [lat, lng]
+type ZoneStatus = "SAFE" | "WARNING" | "DANGER"
+type ZoneWithUnknown = ZoneStatus | "UNKNOWN"
 
-// Base Tamil Nadu coastline used to derive fixed-distance maritime zones
-const TN_COASTLINE_COORDS: [number, number][] = [
+type BoatMarkerData = {
+  boatId: string
+  lat: number
+  lon: number
+  zone: ZoneWithUnknown
+  distance?: number
+  timestamp?: string
+}
+
+// ─── Tamil Nadu Coastline + Distance Zones ─────────────────────────────────
+// Coordinates are [lat, lng]
+const TN_COASTLINE_FALLBACK: [number, number][] = [
   [13.47, 80.30], [13.32, 80.30], [13.20, 80.30], [13.08, 80.29],
   [12.95, 80.27], [12.82, 80.23], [12.70, 80.20], [12.57, 80.18],
   [12.45, 80.14], [12.32, 80.10], [12.20, 80.06], [12.08, 80.00],
@@ -35,92 +48,76 @@ const TN_COASTLINE_COORDS: [number, number][] = [
 ]
 
 const TN_LAND_CENTROID: [number, number] = [10.9, 78.7]
+const BUFFER_ZONE_KM = {
+  SAFE: 10,
+  WARNING: 20,
+  DANGER: 30,
+} as const
 
-// Base IMBL coordinates — actual India–Sri Lanka maritime boundary
-const IMBL_PALK_COORDS: [number, number][] = [
-  [10.80, 80.30], [10.60, 80.20], [10.47, 80.12], [10.22, 79.97],
-  [9.95,  79.82], [9.72, 79.67], [9.52, 79.57], [9.35, 79.49],
-  [9.17,  79.43], [9.00, 79.35],
-]
-const IMBL_GULF_COORDS: [number, number][] = [
-  [9.17, 79.43], [9.00, 79.20], [8.83, 78.92], [8.68, 78.62],
-  [8.53, 78.32], [8.38, 78.02], [8.23, 77.72], [8.10, 77.46],
-  [7.95, 77.20], [7.80, 76.95],
-]
+type BoundaryConfig = {
+  name: string
+  color: string
+  weight: number
+  opacity: number
+  dashArray: string | null
+  description: string
+  coordinates: [number, number][]
+  zoneType?: ZoneStatus
+}
 
-// offsetLine is a hoisted function declaration defined below — safe to call here
-const TN_MARITIME_BOUNDARIES = [
-  {
-    name: "Tamil Nadu Coastline",
-    color: "#06b6d4",
-    weight: 2,
-    opacity: 0.8,
-    dashArray: null as string | null,
-    description: "Shoreline (Baseline)",
-    usedForDistance: false,
-    showInLegend: true,
-    coordinates: TN_COASTLINE_COORDS,
-  },
-  {
-    name: "Warning Zone (25 km)",
-    color: "#f59e0b",
-    weight: 2.5,
-    opacity: 0.9,
-    dashArray: "10, 6" as string | null,
-    description: "Fixed 25 km offshore boundary from TN coast",
-    usedForDistance: true,
-    showInLegend: true,
-    coordinates: offsetFromCoastline(TN_COASTLINE_COORDS, 25, TN_LAND_CENTROID),
-  },
-  {
-    name: "Danger Zone (12 km)",
-    color: "#f97316",
-    weight: 2.5,
-    opacity: 0.95,
-    dashArray: "6, 4" as string | null,
-    description: "Fixed 12 km offshore boundary from TN coast",
-    usedForDistance: true,
-    showInLegend: true,
-    coordinates: offsetFromCoastline(TN_COASTLINE_COORDS, 12, TN_LAND_CENTROID),
-  },
-  {
-    name: "IMBL — Palk Strait",
-    color: "#ef4444",
-    weight: 3,
-    opacity: 1.0,
-    dashArray: "14, 6" as string | null,
-    description: "India–Sri Lanka International Maritime Boundary (1974)",
-    usedForDistance: true,
-    showInLegend: true,
-    coordinates: IMBL_PALK_COORDS,
-  },
-  {
-    name: "IMBL — Gulf of Mannar",
-    color: "#ef4444",
-    weight: 3,
-    opacity: 1.0,
-    dashArray: "14, 6" as string | null,
-    description: "India–Sri Lanka International Maritime Boundary (1976)",
-    usedForDistance: true,
-    showInLegend: true,
-    coordinates: IMBL_GULF_COORDS,
-  },
-]
+let coastlineSegments: { start: [number, number]; end: [number, number] }[] = []
 
-// Store boundary segments for distance calculation (IMBL lines only)
-let allBoundarySegments: { start: [number, number]; end: [number, number] }[] = []
+function buildBoundariesFromCoastline(coastlineCoords: [number, number][]): BoundaryConfig[] {
+  return [
+    {
+      name: "Tamil Nadu Coastline",
+      color: "#06b6d4",
+      weight: 2,
+      opacity: 0.9,
+      dashArray: null,
+      description: "Coastline loaded from GeoJSON",
+      coordinates: coastlineCoords,
+    },
+    {
+      name: `SAFE Zone (${BUFFER_ZONE_KM.SAFE} km)`,
+      color: "#22c55e",
+      weight: 2.5,
+      opacity: 0.85,
+      dashArray: "12, 8",
+      description: `${BUFFER_ZONE_KM.SAFE} km maritime buffer`,
+      coordinates: offsetFromCoastline(coastlineCoords, BUFFER_ZONE_KM.SAFE, TN_LAND_CENTROID),
+      zoneType: "SAFE",
+    },
+    {
+      name: `WARNING Zone (${BUFFER_ZONE_KM.WARNING} km)`,
+      color: "#f59e0b",
+      weight: 2.8,
+      opacity: 0.9,
+      dashArray: "10, 6",
+      description: `${BUFFER_ZONE_KM.WARNING} km maritime buffer`,
+      coordinates: offsetFromCoastline(coastlineCoords, BUFFER_ZONE_KM.WARNING, TN_LAND_CENTROID),
+      zoneType: "WARNING",
+    },
+    {
+      name: `DANGER Zone (${BUFFER_ZONE_KM.DANGER} km)`,
+      color: "#ef4444",
+      weight: 3,
+      opacity: 0.95,
+      dashArray: "8, 5",
+      description: `${BUFFER_ZONE_KM.DANGER} km maritime buffer`,
+      coordinates: offsetFromCoastline(coastlineCoords, BUFFER_ZONE_KM.DANGER, TN_LAND_CENTROID),
+      zoneType: "DANGER",
+    },
+  ]
+}
 
-function initBoundarySegments() {
-  allBoundarySegments = []
-  for (const boundary of TN_MARITIME_BOUNDARIES) {
-    if (!boundary.usedForDistance) continue
-    const coords = boundary.coordinates
-    for (let i = 0; i < coords.length - 1; i++) {
-      allBoundarySegments.push({
-        start: coords[i],
-        end: coords[i + 1],
-      })
-    }
+function initCoastlineSegments(coastlineCoords: [number, number][]) {
+  coastlineSegments = []
+  for (let i = 0; i < coastlineCoords.length - 1; i++) {
+    coastlineSegments.push({
+      start: coastlineCoords[i],
+      end: coastlineCoords[i + 1],
+    })
   }
 }
 
@@ -162,49 +159,64 @@ function pointToSegmentDistance(
   return haversineDistance(pLat, pLng, projLat, projLng)
 }
 
-// Calculate minimum distance to nearest IMBL boundary
+function calculateBearing(fromLat: number, fromLon: number, toLat: number, toLon: number): number {
+  const phi1 = (fromLat * Math.PI) / 180
+  const phi2 = (toLat * Math.PI) / 180
+  const deltaLambda = ((toLon - fromLon) * Math.PI) / 180
+  const y = Math.sin(deltaLambda) * Math.cos(phi2)
+  const x = Math.cos(phi1) * Math.sin(phi2) - Math.sin(phi1) * Math.cos(phi2) * Math.cos(deltaLambda)
+  const theta = Math.atan2(y, x)
+  return ((theta * 180) / Math.PI + 360) % 360
+}
+
 function calculateDistanceToBoundary(lat: number, lng: number): number {
-  if (allBoundarySegments.length === 0) initBoundarySegments()
+  if (coastlineSegments.length === 0) initCoastlineSegments(TN_COASTLINE_FALLBACK)
 
   let minDistance = Infinity
-  for (const segment of allBoundarySegments) {
+  for (const segment of coastlineSegments) {
     const distance = pointToSegmentDistance(lat, lng, segment.start[0], segment.start[1], segment.end[0], segment.end[1])
     if (distance < minDistance) minDistance = distance
   }
   return minDistance === Infinity ? 999 : minDistance
 }
 
-// Find the name of the nearest boundary line
 function findNearestBoundary(lat: number, lng: number): string {
-  if (allBoundarySegments.length === 0) initBoundarySegments()
-
-  let minDistance = Infinity
-  let nearestName = "Tamil Nadu Waters"
-
-  for (const boundary of TN_MARITIME_BOUNDARIES) {
-    const coords = boundary.coordinates
-    let featureMin = Infinity
-    for (let i = 0; i < coords.length - 1; i++) {
-      const d = pointToSegmentDistance(lat, lng, coords[i][0], coords[i][1], coords[i + 1][0], coords[i + 1][1])
-      if (d < featureMin) featureMin = d
-    }
-    if (featureMin < minDistance) {
-      minDistance = featureMin
-      nearestName = boundary.name
-    }
-  }
-  return nearestName
+  const distance = calculateDistanceToBoundary(lat, lng)
+  if (distance <= BUFFER_ZONE_KM.SAFE) return `SAFE Zone (${BUFFER_ZONE_KM.SAFE} km)`
+  if (distance <= BUFFER_ZONE_KM.WARNING) return `WARNING Zone (${BUFFER_ZONE_KM.WARNING} km)`
+  if (distance <= BUFFER_ZONE_KM.DANGER) return `DANGER Zone (${BUFFER_ZONE_KM.DANGER} km)`
+  return `Beyond ${BUFFER_ZONE_KM.DANGER} km buffer`
 }
 
-// ─── Demo Mode Route (SAFE → WARNING → DANGER → back) ─────────────────────
+function parseCoastlineFromGeoJson(data: unknown): [number, number][] | null {
+  if (!data || typeof data !== "object") return null
+  const featureCollection = data as {
+    type?: string
+    features?: Array<{ geometry?: { type?: string; coordinates?: unknown } }>
+  }
+  if (featureCollection.type !== "FeatureCollection" || !Array.isArray(featureCollection.features)) return null
+
+  const firstLine = featureCollection.features.find((feature) => feature?.geometry?.type === "LineString")
+  const coords = firstLine?.geometry?.coordinates
+  if (!Array.isArray(coords)) return null
+
+  const latLngs = coords
+    .filter((point): point is [number, number] => Array.isArray(point) && point.length >= 2)
+    .map(([lng, lat]) => [Number(lat), Number(lng)] as [number, number])
+    .filter(([lat, lng]) => Number.isFinite(lat) && Number.isFinite(lng))
+
+  return latLngs.length > 1 ? latLngs : null
+}
+
+// ─── Demo Mode Route (SAFE near coast → WARNING → DANGER farther offshore → back) ──
 const DEMO_WAYPOINTS: { lat: number; lon: number }[] = [
-  { lat: 9.80,  lon: 79.10 }, // Start far west — clearly SAFE (>40 km from IMBL)
-  { lat: 9.70,  lon: 79.15 }, // Still SAFE
-  { lat: 9.60,  lon: 79.22 }, // Still SAFE
-  { lat: 9.50,  lon: 79.32 }, // Entering WARNING (~22 km)
-  { lat: 9.40,  lon: 79.40 }, // Deep WARNING (~15 km)
-  { lat: 9.30,  lon: 79.48 }, // Entering DANGER (~10 km)
-  { lat: 9.22,  lon: 79.53 }, // Deep DANGER (~5 km)
+  { lat: 9.80,  lon: 79.10 },
+  { lat: 9.70,  lon: 79.15 },
+  { lat: 9.60,  lon: 79.22 },
+  { lat: 9.50,  lon: 79.32 },
+  { lat: 9.40,  lon: 79.40 },
+  { lat: 9.30,  lon: 79.48 },
+  { lat: 9.22,  lon: 79.53 },
   { lat: 9.30,  lon: 79.48 }, // Turning back
   { lat: 9.40,  lon: 79.40 }, // WARNING again
   { lat: 9.50,  lon: 79.32 },
@@ -238,28 +250,212 @@ export default function LeafletMap({
   onStatusUpdate,
   onEEZUpdate,
   onZoneUpdate,
+  onBoatSelect,
+  onBoatsUpdate,
+  selectedBoatId,
   demoMode = false,
 }: LeafletMapProps) {
   const mapRef = useRef<HTMLDivElement>(null)
   const mapInstanceRef = useRef<L.Map | null>(null)
-  const markerRef = useRef<L.Marker | null>(null)
+  const markerByBoatRef = useRef<Map<string, L.Marker>>(new Map())
+  const boatDataByIdRef = useRef<Map<string, BoatMarkerData>>(new Map())
   const pathPolylineRef = useRef<L.Polyline | null>(null)
   const pathRef = useRef<[number, number][]>([])
   const socketRef = useRef<Socket | null>(null)
   const [isTracking, setIsTracking] = useState(false)
   const [boundaryCount, setBoundaryCount] = useState(0)
-  const lastPositionRef = useRef<{ lat: number; lng: number; time: number } | null>(null)
+  const lastPositionByBoatRef = useRef<Map<string, { lat: number; lng: number; time: number }>>(new Map())
+  const headingByBoatRef = useRef<Map<string, number>>(new Map())
   const demoIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null)
   const demoIndexRef = useRef(0)
   const followVesselRef = useRef(true)
+  const selectedBoatIdRef = useRef<string | null>(selectedBoatId ?? null)
+  const primaryPathBoatIdRef = useRef<string | null>(selectedBoatId ?? null)
   const [followVessel, setFollowVessel] = useState(true)
   const styleElRef = useRef<HTMLStyleElement | null>(null)
+  const zoneBoundaryRefs = useRef<{ safe: L.Polyline | null; warning: L.Polyline | null; danger: L.Polyline | null }>({
+    safe: null,
+    warning: null,
+    danger: null,
+  })
+
+  const normalizeZone = (zone: unknown): ZoneWithUnknown => {
+    if (zone === "SAFE" || zone === "WARNING" || zone === "DANGER") return zone
+    return "UNKNOWN"
+  }
+
+  const vesselIcon = (zone: ZoneWithUnknown, selected: boolean, _headingDeg: number) => {
+    const color = zone === "DANGER" ? "#ef4444" : zone === "WARNING" ? "#f59e0b" : zone === "SAFE" ? "#22c55e" : "#06b6d4"
+    return L.divIcon({
+      className: "vessel-marker",
+      html: `
+        <div style="width:18px;height:18px;border-radius:999px;background:${color};border:2px solid ${selected ? "#fde047" : "#ffffff"};box-shadow:${selected ? "0 0 0 2px rgba(253,224,71,0.35)" : "0 0 0 1px rgba(15,23,42,0.55)"};"></div>
+      `,
+      iconSize: [18, 18],
+      iconAnchor: [9, 9],
+      tooltipAnchor: [0, -12],
+      popupAnchor: [0, -10],
+    })
+  }
+
+  const getZoneFromDistance = (distanceKm: number): ZoneStatus => {
+    if (distanceKm <= BUFFER_ZONE_KM.SAFE) return "SAFE"
+    if (distanceKm <= BUFFER_ZONE_KM.WARNING) return "WARNING"
+    return "DANGER"
+  }
+
+  const updateBoundaryStyles = (zone: ZoneStatus) => {
+    const safeLine = zoneBoundaryRefs.current.safe
+    const warningLine = zoneBoundaryRefs.current.warning
+    const dangerLine = zoneBoundaryRefs.current.danger
+
+    if (safeLine) {
+      safeLine.setStyle({
+        color: zone === "SAFE" ? "#22c55e" : "#16a34a",
+        weight: zone === "SAFE" ? 3.2 : 2.5,
+        opacity: zone === "SAFE" ? 1 : 0.85,
+      })
+    }
+
+    if (warningLine) {
+      warningLine.setStyle({
+        color: zone === "WARNING" || zone === "DANGER" ? "#fde047" : "#f59e0b",
+        weight: zone === "WARNING" || zone === "DANGER" ? 4 : 2.5,
+        opacity: zone === "WARNING" || zone === "DANGER" ? 1 : 0.9,
+      })
+    }
+
+    if (dangerLine) {
+      dangerLine.setStyle({
+        color: zone === "DANGER" ? "#ef4444" : "#f97316",
+        weight: zone === "DANGER" ? 4.5 : 2.5,
+        opacity: zone === "DANGER" ? 1 : 0.95,
+      })
+    }
+  }
+
+  const processGeofenceState = (lat: number, lng: number): ZoneStatus => {
+    const distance = calculateDistanceToBoundary(lat, lng)
+    const zone = getZoneFromDistance(distance)
+    onProximityUpdate(distance)
+    onZoneUpdate?.(zone)
+    onEEZUpdate?.(findNearestBoundary(lat, lng))
+    updateBoundaryStyles(zone)
+    return zone
+  }
+
+  const emitBoats = () => {
+    const boats = Array.from(boatDataByIdRef.current.values()).sort((a, b) => a.boatId.localeCompare(b.boatId))
+    onBoatsUpdate?.(boats)
+  }
+
+  const refreshMarkerStyles = () => {
+    const selected = selectedBoatIdRef.current
+    for (const [id, marker] of markerByBoatRef.current.entries()) {
+      const boat = boatDataByIdRef.current.get(id)
+      if (!boat) continue
+      const heading = headingByBoatRef.current.get(id) ?? 0
+      marker.setIcon(vesselIcon(boat.zone, selected === id, heading))
+      marker.setTooltipContent(`<b>${boat.boatId}</b><br>Status: ${boat.zone}`)
+    }
+  }
+
+  const updateSelectedBoatState = (boat: BoatMarkerData, currentTime: number, directSpeed?: number) => {
+    onLocationUpdate(boat.lat, boat.lon)
+    processGeofenceState(boat.lat, boat.lon)
+
+    const prev = lastPositionByBoatRef.current.get(boat.boatId)
+    if (typeof directSpeed === "number" && Number.isFinite(directSpeed) && directSpeed >= 0) {
+      onSpeedUpdate(Math.min(directSpeed, 120))
+    } else if (prev) {
+      const timeDiff = (currentTime - prev.time) / 1000 / 3600
+      if (timeDiff > 0) {
+        const distKm = haversineDistance(boat.lat, boat.lon, prev.lat, prev.lng)
+        const speedKnots = (distKm / timeDiff) * 0.539957
+        if (Number.isFinite(speedKnots) && speedKnots >= 0) onSpeedUpdate(Math.min(speedKnots, 120))
+      }
+    } else {
+      onSpeedUpdate(0)
+    }
+
+    if (primaryPathBoatIdRef.current === boat.boatId) {
+      pathRef.current.push([boat.lat, boat.lon])
+      if (pathRef.current.length > 200) pathRef.current.shift()
+      pathPolylineRef.current?.setLatLngs(pathRef.current)
+    }
+
+    lastPositionByBoatRef.current.set(boat.boatId, { lat: boat.lat, lng: boat.lon, time: currentTime })
+  }
+
+  const upsertBoat = (boat: BoatMarkerData, opts?: { shouldPan?: boolean; zoomOnSelect?: boolean; directSpeed?: number }) => {
+    const map = mapInstanceRef.current
+    if (!map) return
+
+    const selectedId = selectedBoatIdRef.current
+    const existing = markerByBoatRef.current.get(boat.boatId)
+
+    const previous = lastPositionByBoatRef.current.get(boat.boatId)
+    if (previous) {
+      const heading = calculateBearing(previous.lat, previous.lng, boat.lat, boat.lon)
+      if (Number.isFinite(heading)) headingByBoatRef.current.set(boat.boatId, heading)
+    } else if (!headingByBoatRef.current.has(boat.boatId)) {
+      headingByBoatRef.current.set(boat.boatId, 0)
+    }
+
+    const heading = headingByBoatRef.current.get(boat.boatId) ?? 0
+    if (existing) {
+      existing.setLatLng([boat.lat, boat.lon])
+      existing.setIcon(vesselIcon(boat.zone, selectedId === boat.boatId, heading))
+      existing.setTooltipContent(`<b>${boat.boatId}</b><br>Status: ${boat.zone}`)
+      existing.setPopupContent(`<b>${boat.boatId}</b><br>Lat: ${boat.lat.toFixed(4)}<br>Lon: ${boat.lon.toFixed(4)}<br>Zone: ${boat.zone}`)
+    } else {
+      const marker = L.marker([boat.lat, boat.lon], {
+        icon: vesselIcon(boat.zone, selectedId === boat.boatId, heading),
+      }).addTo(map)
+
+      marker.bindTooltip(`<b>${boat.boatId}</b><br>Status: ${boat.zone}`, {
+        direction: "top",
+        offset: [0, -18],
+        className: "eez-tooltip",
+      })
+      marker.bindPopup(`<b>${boat.boatId}</b><br>Lat: ${boat.lat.toFixed(4)}<br>Lon: ${boat.lon.toFixed(4)}<br>Zone: ${boat.zone}`)
+      marker.on("click", () => {
+        selectedBoatIdRef.current = boat.boatId
+        primaryPathBoatIdRef.current = boat.boatId
+        pathRef.current = [[boat.lat, boat.lon]]
+        pathPolylineRef.current?.setLatLngs(pathRef.current)
+        refreshMarkerStyles()
+        onBoatSelect?.(boat)
+        updateSelectedBoatState(boat, Date.now())
+        map.setView([boat.lat, boat.lon], Math.max(map.getZoom(), 10), { animate: true })
+      })
+      markerByBoatRef.current.set(boat.boatId, marker)
+    }
+
+    boatDataByIdRef.current.set(boat.boatId, boat)
+    refreshMarkerStyles()
+
+    if (!selectedBoatIdRef.current) {
+      selectedBoatIdRef.current = boat.boatId
+      primaryPathBoatIdRef.current = boat.boatId
+      onBoatSelect?.(boat)
+    }
+
+    if (selectedBoatIdRef.current === boat.boatId) {
+      updateSelectedBoatState(boat, Date.now(), opts?.directSpeed)
+      if (opts?.shouldPan && followVesselRef.current) {
+        map.panTo([boat.lat, boat.lon])
+      }
+      if (opts?.zoomOnSelect) {
+        map.setView([boat.lat, boat.lon], Math.max(map.getZoom(), 10), { animate: true })
+      }
+    }
+
+    emitBoats()
+  }
 
   useEffect(() => {
     if (!mapRef.current || mapInstanceRef.current) return
-
-    // Initialize boundary segments
-    initBoundarySegments()
 
     // Initialize map — centred on Tamil Nadu coast
     const map = L.map(mapRef.current, {
@@ -289,37 +485,40 @@ export default function LeafletMap({
       opacity: 0.95,
     }).addTo(map)
 
-    // Draw all Tamil Nadu maritime boundaries
-    TN_MARITIME_BOUNDARIES.forEach((boundary) => {
-      const latLngs = boundary.coordinates
+    const renderZoneBoundaries = (coastlineCoords: [number, number][]) => {
+      initCoastlineSegments(coastlineCoords)
+      const boundaries = buildBoundariesFromCoastline(coastlineCoords)
 
-      // Glow/halo under the line
-      L.polyline(latLngs, {
-        color: boundary.color,
-        weight: boundary.weight + 7,
-        opacity: 0.18,
-        lineCap: "round",
-        lineJoin: "round",
-      }).addTo(map)
+      boundaries.forEach((boundary) => {
+        const latLngs = boundary.coordinates
 
-      // Main boundary line
-      const line = L.polyline(latLngs, {
-        color: boundary.color,
-        weight: boundary.weight,
-        opacity: boundary.opacity,
-        dashArray: boundary.dashArray ?? undefined,
-        lineCap: "round",
-        lineJoin: "round",
-      }).addTo(map)
+        L.polyline(latLngs, {
+          color: boundary.color,
+          weight: boundary.weight + 6,
+          opacity: 0.16,
+          lineCap: "round",
+          lineJoin: "round",
+        }).addTo(map)
 
-      line.bindTooltip(`<b>${boundary.name}</b><br><small>${boundary.description}</small>`, {
-        permanent: false,
-        direction: "center",
-        className: "eez-tooltip",
-      })
+        const line = L.polyline(latLngs, {
+          color: boundary.color,
+          weight: boundary.weight,
+          opacity: boundary.opacity,
+          dashArray: boundary.dashArray ?? undefined,
+          lineCap: "round",
+          lineJoin: "round",
+        }).addTo(map)
 
-      // Mid-point label (only for legend-visible entries)
-      if (boundary.showInLegend) {
+        if (boundary.zoneType === "SAFE") zoneBoundaryRefs.current.safe = line
+        if (boundary.zoneType === "WARNING") zoneBoundaryRefs.current.warning = line
+        if (boundary.zoneType === "DANGER") zoneBoundaryRefs.current.danger = line
+
+        line.bindTooltip(`<b>${boundary.name}</b><br><small>${boundary.description}</small>`, {
+          permanent: false,
+          direction: "center",
+          className: "eez-tooltip",
+        })
+
         const mid = latLngs[Math.floor(latLngs.length / 2)]
         L.marker(mid, {
           icon: L.divIcon({
@@ -329,58 +528,40 @@ export default function LeafletMap({
             iconAnchor: [115, 15],
           }),
         }).addTo(map)
-      }
-    })
+      })
 
-    setBoundaryCount(TN_MARITIME_BOUNDARIES.length)
+      setBoundaryCount(boundaries.length)
+    }
 
-    // Custom vessel marker
-    const vesselIcon = L.divIcon({
-      className: "vessel-marker",
-      html: `
-        <div style="position: relative;">
-          <div style="position: absolute; width: 46px; height: 46px; left: -3px; top: -3px; background: rgba(6, 182, 212, 0.25); border-radius: 50%; animation: ping 1.5s cubic-bezier(0, 0, 0.2, 1) infinite;"></div>
-          <div style="position: absolute; width: 32px; height: 32px; left: 4px; top: 4px; background: rgba(34, 197, 94, 0.2); border-radius: 50%; animation: ping 2s cubic-bezier(0, 0, 0.2, 1) infinite 0.5s;"></div>
-          <svg width="40" height="40" viewBox="0 0 64 64" style="filter: drop-shadow(0 4px 8px rgba(0,0,0,0.5));">
-            <defs>
-              <linearGradient id="vesselGrad" x1="0%" y1="0%" x2="100%" y2="100%">
-                <stop offset="0%" stop-color="#06b6d4" />
-                <stop offset="50%" stop-color="#22c55e" />
-                <stop offset="100%" stop-color="#0891b2" />
-              </linearGradient>
-            </defs>
-            <path fill="#e2f3ff" d="M13 36h38l-7 15H20z" />
-            <path fill="url(#vesselGrad)" d="M17 34h30l-5 11H22z" />
-            <path fill="#fb923c" d="M29 18h5v16h-5z" />
-            <path fill="#f8fafc" d="M34 19l10 6H34z" />
-            <path fill="#bae6fd" d="M20 34h24l-3 7H23z" opacity="0.85" />
-          </svg>
-        </div>
-      `,
-      iconSize: [40, 40],
-      iconAnchor: [20, 40],
-    })
+    fetch("/data/tamil-nadu-coastline.geojson")
+      .then((response) => response.ok ? response.json() : null)
+      .then((geoJson) => {
+        const coastline = parseCoastlineFromGeoJson(geoJson) || TN_COASTLINE_FALLBACK
+        renderZoneBoundaries(coastline)
+      })
+      .catch(() => {
+        renderZoneBoundaries(TN_COASTLINE_FALLBACK)
+      })
 
-    // Initial position
-    const initialLat = 9.80
-    const initialLng = 79.10
-    const marker = L.marker([initialLat, initialLng], { icon: vesselIcon }).addTo(map)
-    marker.bindPopup("<b>Your Vessel</b><br>Live ESP32 Tracking").openPopup()
-    markerRef.current = marker
+    // Initial selected vessel fallback
+    const initialBoat: BoatMarkerData = {
+      boatId: selectedBoatIdRef.current || "BOAT1",
+      lat: 9.8,
+      lon: 79.1,
+      zone: "SAFE",
+    }
+    upsertBoat(initialBoat, { shouldPan: false })
 
     // Path trail polyline
     const pathPolyline = L.polyline([], {
       color: "#38bdf8",
       weight: 3,
       opacity: 0.7,
+      pane: "overlayPane",
+      interactive: false,
     }).addTo(map)
+    pathPolyline.bringToBack()
     pathPolylineRef.current = pathPolyline
-
-    // Initial updates
-    onLocationUpdate(initialLat, initialLng)
-    const initialDistance = calculateDistanceToBoundary(initialLat, initialLng)
-    onProximityUpdate(initialDistance)
-    onSpeedUpdate(0)
 
     mapInstanceRef.current = map
 
@@ -474,7 +655,20 @@ export default function LeafletMap({
         mapInstanceRef.current = null
       }
     }
-  }, [onLocationUpdate, onProximityUpdate, onSpeedUpdate])
+  }, [onLocationUpdate, onProximityUpdate, onSpeedUpdate, onEEZUpdate, onZoneUpdate, onBoatSelect, onBoatsUpdate])
+
+  useEffect(() => {
+    if (!selectedBoatId || !mapInstanceRef.current) return
+    selectedBoatIdRef.current = selectedBoatId
+    primaryPathBoatIdRef.current = selectedBoatId
+    const boat = boatDataByIdRef.current.get(selectedBoatId)
+    if (!boat) return
+    pathRef.current = [[boat.lat, boat.lon]]
+    pathPolylineRef.current?.setLatLngs(pathRef.current)
+    updateSelectedBoatState(boat, Date.now())
+    refreshMarkerStyles()
+    mapInstanceRef.current.setView([boat.lat, boat.lon], Math.max(mapInstanceRef.current.getZoom(), 10), { animate: true })
+  }, [selectedBoatId])
 
   // Socket.io real-time connection + initial REST fetch
   useEffect(() => {
@@ -482,25 +676,28 @@ export default function LeafletMap({
 
     const BACKEND_URL = process.env.NEXT_PUBLIC_BACKEND_URL || "http://localhost:5000"
 
-    // Initial REST fetch — show latest position immediately on load
-    fetch(`${BACKEND_URL}/api/location`)
-      .then(r => r.ok ? r.json() : null)
-      .then(data => {
-        if (!data?.lat) return
-        const lat = Number(data.lat)
-        const lng = Number(data.lon)
-        if (markerRef.current && mapInstanceRef.current) {
-          markerRef.current.setLatLng([lat, lng])
-          if (followVesselRef.current) mapInstanceRef.current.panTo([lat, lng])
+    // Initial REST fetch — load latest snapshot for all boats
+    fetch(`${BACKEND_URL}/api/location/latest`)
+      .then(r => r.ok ? r.json() : [])
+      .then((rows: Array<{ boatId?: string; lat?: number; lon?: number; zone?: string; distance?: number; timestamp?: string }>) => {
+        const normalizedRows = Array.isArray(rows) ? rows : []
+        if (normalizedRows.length === 0) return fetch(`${BACKEND_URL}/api/location`).then(r => r.ok ? r.json() : null).then((single) => single ? [single] : [])
+        return normalizedRows
+      })
+      .then((rows: Array<{ boatId?: string; lat?: number; lon?: number; zone?: string; distance?: number; timestamp?: string }>) => {
+        if (!Array.isArray(rows) || rows.length === 0) return
+        for (const row of rows) {
+          if (row.lat === undefined || row.lon === undefined) continue
+          const boat: BoatMarkerData = {
+            boatId: row.boatId || "BOAT1",
+            lat: Number(row.lat),
+            lon: Number(row.lon),
+            zone: normalizeZone(row.zone),
+            distance: row.distance,
+            timestamp: row.timestamp,
+          }
+          upsertBoat(boat, { shouldPan: false })
         }
-        pathRef.current.push([lat, lng])
-        pathPolylineRef.current?.setLatLngs(pathRef.current)
-        onLocationUpdate(lat, lng)
-        const distance = data.distance != null ? Number(data.distance) : calculateDistanceToBoundary(lat, lng)
-        onProximityUpdate(distance)
-        if (data.zone) onZoneUpdate?.(data.zone)
-        onEEZUpdate?.(findNearestBoundary(lat, lng))
-        lastPositionRef.current = { lat, lng, time: Date.now() }
         setIsTracking(true)
         onStatusUpdate?.("Backend Connected")
       })
@@ -519,42 +716,22 @@ export default function LeafletMap({
       onStatusUpdate?.("Backend Offline")
     })
 
-    socket.on("locationUpdate", (data: { lat: number; lon: number; distance?: number; zone?: string }) => {
+    socket.on("locationUpdate", (data: { boatId?: string; lat: number; lon: number; speed?: number; zone?: string; distance?: number; timestamp?: string }) => {
+      if (demoMode) return
       const lat = Number(data.lat)
       const lng = Number(data.lon)
-      const currentTime = Date.now()
-
-      if (markerRef.current && mapInstanceRef.current) {
-        markerRef.current.setLatLng([lat, lng])
-        if (followVesselRef.current) mapInstanceRef.current.panTo([lat, lng])
+      const boat: BoatMarkerData = {
+        boatId: data.boatId || "BOAT1",
+        lat,
+        lon: lng,
+        zone: normalizeZone(data.zone),
+        distance: data.distance,
+        timestamp: data.timestamp,
       }
-
-      pathRef.current.push([lat, lng])
-      if (pathRef.current.length > 200) pathRef.current.shift()
-      pathPolylineRef.current?.setLatLngs(pathRef.current)
-
-      onLocationUpdate(lat, lng)
-      const distance = data.distance != null ? Number(data.distance) : calculateDistanceToBoundary(lat, lng)
-      onProximityUpdate(distance)
-      if (data.zone) onZoneUpdate?.(data.zone)
-      onEEZUpdate?.(findNearestBoundary(lat, lng))
-
-      if (typeof (data as { speed?: unknown }).speed === "number") {
-        const directSpeed = Number((data as { speed: number }).speed)
-        if (Number.isFinite(directSpeed) && directSpeed >= 0) {
-          onSpeedUpdate(Math.min(directSpeed, 120))
-        }
-      } else if (lastPositionRef.current) {
-        const timeDiff = (currentTime - lastPositionRef.current.time) / 1000 / 3600
-        if (timeDiff > 0) {
-          const distKm = haversineDistance(lat, lng, lastPositionRef.current.lat, lastPositionRef.current.lng)
-          const speedKnots = (distKm / timeDiff) * 0.539957
-          if (Number.isFinite(speedKnots) && speedKnots >= 0) onSpeedUpdate(Math.min(speedKnots, 120))
-        }
-      } else {
-        onSpeedUpdate(0)
-      }
-      lastPositionRef.current = { lat, lng, time: currentTime }
+      upsertBoat(boat, {
+        shouldPan: true,
+        directSpeed: typeof data.speed === "number" ? Number(data.speed) : undefined,
+      })
     })
 
     socketRef.current = socket
@@ -562,7 +739,7 @@ export default function LeafletMap({
     return () => {
       socket.disconnect()
     }
-  }, [onLocationUpdate, onProximityUpdate, onSpeedUpdate, onStatusUpdate, onEEZUpdate, onZoneUpdate])
+  }, [demoMode, onLocationUpdate, onProximityUpdate, onSpeedUpdate, onStatusUpdate, onEEZUpdate, onZoneUpdate, onBoatSelect, onBoatsUpdate])
 
   // ─── Demo Mode ─────────────────────────────────────────────────────────────
   useEffect(() => {
@@ -585,40 +762,11 @@ export default function LeafletMap({
       const point = DEMO_ROUTE[demoIndexRef.current]
       const lat = point.lat
       const lng = point.lon
-      const currentTime = Date.now()
-
-      if (markerRef.current) markerRef.current.setLatLng([lat, lng])
-      if (followVesselRef.current) mapInstanceRef.current.panTo([lat, lng])
-
-      pathRef.current.push([lat, lng])
-      if (pathRef.current.length > 200) pathRef.current.shift()
-      pathPolylineRef.current?.setLatLngs(pathRef.current)
-
-      onLocationUpdate(lat, lng)
-      const distance = calculateDistanceToBoundary(lat, lng)
-      onProximityUpdate(distance)
-      onEEZUpdate?.(findNearestBoundary(lat, lng))
-
-      // Determine zone
-      if (distance < 12) {
-        onZoneUpdate?.("DANGER")
-      } else if (distance < 25) {
-        onZoneUpdate?.("WARNING")
-      } else {
-        onZoneUpdate?.("SAFE")
-      }
-
-      if (lastPositionRef.current) {
-        const timeDiff = (currentTime - lastPositionRef.current.time) / 1000 / 3600
-        if (timeDiff > 0) {
-          const distKm = haversineDistance(lat, lng, lastPositionRef.current.lat, lastPositionRef.current.lng)
-          const speedKnots = (distKm / timeDiff) * 0.539957
-          if (Number.isFinite(speedKnots) && speedKnots >= 0) onSpeedUpdate(Math.min(speedKnots, 120))
-        }
-      } else {
-        onSpeedUpdate(0)
-      }
-      lastPositionRef.current = { lat, lng, time: currentTime }
+      const demoBoatId = "DEMO-BOAT1"
+      selectedBoatIdRef.current = demoBoatId
+      primaryPathBoatIdRef.current = demoBoatId
+      const demoZone = getZoneFromDistance(calculateDistanceToBoundary(lat, lng))
+      upsertBoat({ boatId: demoBoatId, lat, lon: lng, zone: demoZone }, { shouldPan: true })
       demoIndexRef.current = (demoIndexRef.current + 1) % DEMO_ROUTE.length
     }, 250)
 
@@ -628,7 +776,7 @@ export default function LeafletMap({
         demoIntervalRef.current = null
       }
     }
-  }, [demoMode, onLocationUpdate, onProximityUpdate, onSpeedUpdate, onStatusUpdate, onEEZUpdate, onZoneUpdate])
+  }, [demoMode, onLocationUpdate, onProximityUpdate, onSpeedUpdate, onStatusUpdate, onEEZUpdate, onZoneUpdate, onBoatSelect, onBoatsUpdate])
 
   return (
     <div className="relative w-full h-full" style={{ minHeight: '520px' }}>
@@ -652,8 +800,9 @@ export default function LeafletMap({
               onClick={() => {
                 followVesselRef.current = true
                 setFollowVessel(true)
-                if (markerRef.current && mapInstanceRef.current) {
-                  mapInstanceRef.current.panTo(markerRef.current.getLatLng())
+                if (mapInstanceRef.current && selectedBoatIdRef.current) {
+                  const selectedMarker = markerByBoatRef.current.get(selectedBoatIdRef.current)
+                  if (selectedMarker) mapInstanceRef.current.panTo(selectedMarker.getLatLng())
                 }
               }}
               className="flex items-center gap-1.5 px-3.5 py-2.5 rounded-lg text-sm font-semibold text-white transition-all"
