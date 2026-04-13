@@ -1,16 +1,18 @@
 // src/components/MapView.jsx
-import { MapContainer, TileLayer, Polyline, Marker, Circle, useMap, useMapEvents } from 'react-leaflet';
+import { MapContainer, TileLayer, Polyline, Marker, GeoJSON, useMap, useMapEvents } from 'react-leaflet';
 import L from 'leaflet';
 import 'leaflet/dist/leaflet.css';
 import { useEffect } from 'react';
 import { useMemo } from 'react';
+import tnCoastline from '../../../backend-api/src/tn_coastline.json';
+import imblBoundary from '../../../backend-api/src/imbl_boundary.json';
 
 // Fix for default Leaflet icons in React
 import icon from 'leaflet/dist/images/marker-icon.png';
 import iconShadow from 'leaflet/dist/images/marker-shadow.png';
 // Custom vessel marker icon (gradient pin with pulse ring)
 function createVesselIcon(zone) {
-  const color = zone === 'DANGER' ? '#ef4444' : zone === 'WARNING' ? '#f59e0b' : '#06b6d4';
+  const color = zone === 'Danger' ? '#ef4444' : zone === 'Warning' ? '#f59e0b' : zone === 'Alert' ? '#22c55e' : '#06b6d4';
   return L.divIcon({
     className: '',
     html: `
@@ -49,18 +51,14 @@ function DragDetector({ onDrag }) {
 
 export default function MapView({
   boatPosition,
-  boundaryPoints,
   boatPath,
   followVessel = true,
   onManualPan,
   zone = 'SAFE',
-  geofenceCenter,
-  geofenceRings,
 }) {
   const vesselIcon = useMemo(() => createVesselIcon(zone), [zone]);
-  const boundaryColor = zone === 'DANGER' ? '#ef4444' : zone === 'WARNING' ? '#f59e0b' : '#22c55e';
-  const warningColor = zone === 'WARNING' || zone === 'DANGER' ? '#fde047' : '#f59e0b';
-  const dangerColor = zone === 'DANGER' ? '#ef4444' : '#f97316';
+  const coastlineStyle = useMemo(() => ({ color: '#2563eb', weight: 3, opacity: 0.8 }), []);
+  const imblBoundaryStyle = useMemo(() => ({ color: '#dc2626', weight: 3, dashArray: '10, 10' }), []);
 
   return (
     <MapContainer 
@@ -79,27 +77,8 @@ export default function MapView({
         attribution=""
         maxZoom={18}
       />
-      {/* Boundary line — colour reflects current zone */}
-      <Polyline
-        positions={boundaryPoints}
-        pathOptions={{ color: boundaryColor, weight: 3.5, dashArray: '12, 8', opacity: 0.9 }}
-      />
-
-      {/* Radius-based geofence rings (warning and danger) */}
-      {geofenceCenter && geofenceRings && (
-        <>
-          <Circle
-            center={geofenceCenter}
-            radius={geofenceRings.WARNING_KM * 1000}
-            pathOptions={{ color: warningColor, weight: zone === 'WARNING' || zone === 'DANGER' ? 3.5 : 2.5, dashArray: '10, 8', fillOpacity: 0.06 }}
-          />
-          <Circle
-            center={geofenceCenter}
-            radius={geofenceRings.DANGER_KM * 1000}
-            pathOptions={{ color: dangerColor, weight: zone === 'DANGER' ? 3.8 : 2.5, dashArray: '8, 6', fillOpacity: zone === 'DANGER' ? 0.14 : 0.08 }}
-          />
-        </>
-      )}
+      <GeoJSON data={tnCoastline} style={coastlineStyle} interactive={false} />
+      <GeoJSON data={imblBoundary} style={imblBoundaryStyle} interactive={false} />
       {/* Path trail */}
       {boatPath.length > 1 && (
         <Polyline

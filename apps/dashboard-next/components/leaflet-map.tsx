@@ -4,6 +4,7 @@ import { useEffect, useRef, useState } from "react"
 import L from "leaflet"
 import "leaflet/dist/leaflet.css"
 import { io, Socket } from "socket.io-client"
+import * as turf from "@turf/turf"
 
 interface LeafletMapProps {
   onLocationUpdate: (lat: number, lng: number) => void
@@ -18,8 +19,9 @@ interface LeafletMapProps {
   demoMode?: boolean
 }
 
-type ZoneStatus = "SAFE" | "WARNING" | "DANGER"
-type ZoneWithUnknown = ZoneStatus | "UNKNOWN"
+type BoatZoneStatus = "SAFE" | "WARNING" | "DANGER"
+type ZoneWithUnknown = BoatZoneStatus | "UNKNOWN"
+type GeofenceZoneStatus = "DANGER" | "WARNING" | "ALERT" | "CLEAR"
 
 type BoatMarkerData = {
   boatId: string
@@ -47,69 +49,21 @@ const TN_COASTLINE_FALLBACK: [number, number][] = [
   [8.12, 77.57], [8.02, 77.52],
 ]
 
-const TN_LAND_CENTROID: [number, number] = [10.9, 78.7]
 const BUFFER_ZONE_KM = {
-  SAFE: 10,
-  WARNING: 20,
-  DANGER: 30,
+  DANGER: 5,
+  WARNING: 12,
+  ALERT: 20,
 } as const
 
-type BoundaryConfig = {
-  name: string
-  color: string
-  weight: number
-  opacity: number
-  dashArray: string | null
-  description: string
-  coordinates: [number, number][]
-  zoneType?: ZoneStatus
-}
-
 let coastlineSegments: { start: [number, number]; end: [number, number] }[] = []
+let imblSegments: { start: [number, number]; end: [number, number] }[] = []
 
-function buildBoundariesFromCoastline(coastlineCoords: [number, number][]): BoundaryConfig[] {
-  return [
-    {
-      name: "Tamil Nadu Coastline",
-      color: "#06b6d4",
-      weight: 2,
-      opacity: 0.9,
-      dashArray: null,
-      description: "Coastline loaded from GeoJSON",
-      coordinates: coastlineCoords,
-    },
-    {
-      name: `SAFE Zone (${BUFFER_ZONE_KM.SAFE} km)`,
-      color: "#22c55e",
-      weight: 2.5,
-      opacity: 0.85,
-      dashArray: "12, 8",
-      description: `${BUFFER_ZONE_KM.SAFE} km maritime buffer`,
-      coordinates: offsetFromCoastline(coastlineCoords, BUFFER_ZONE_KM.SAFE, TN_LAND_CENTROID),
-      zoneType: "SAFE",
-    },
-    {
-      name: `WARNING Zone (${BUFFER_ZONE_KM.WARNING} km)`,
-      color: "#f59e0b",
-      weight: 2.8,
-      opacity: 0.9,
-      dashArray: "10, 6",
-      description: `${BUFFER_ZONE_KM.WARNING} km maritime buffer`,
-      coordinates: offsetFromCoastline(coastlineCoords, BUFFER_ZONE_KM.WARNING, TN_LAND_CENTROID),
-      zoneType: "WARNING",
-    },
-    {
-      name: `DANGER Zone (${BUFFER_ZONE_KM.DANGER} km)`,
-      color: "#ef4444",
-      weight: 3,
-      opacity: 0.95,
-      dashArray: "8, 5",
-      description: `${BUFFER_ZONE_KM.DANGER} km maritime buffer`,
-      coordinates: offsetFromCoastline(coastlineCoords, BUFFER_ZONE_KM.DANGER, TN_LAND_CENTROID),
-      zoneType: "DANGER",
-    },
-  ]
-}
+const IMBL_OFFSET_DIRECTION = -1
+const IMBL_OFFSET_CONFIG = [
+  { name: "Danger Line", distanceKm: -5, color: "#ea580c" },
+  { name: "Warning Line", distanceKm: -12, color: "#eab308" },
+  { name: "Safe Line", distanceKm: -20, color: "#22c55e" },
+] as const
 
 function initCoastlineSegments(coastlineCoords: [number, number][]) {
   coastlineSegments = []
@@ -180,12 +134,53 @@ function calculateDistanceToBoundary(lat: number, lng: number): number {
   return minDistance === Infinity ? 999 : minDistance
 }
 
+function extractImblSegments(data: unknown): { start: [number, number]; end: [number, number] }[] {
+  const segments: { start: [number, number]; end: [number, number] }[] = []
+  const featureCollection = data as {
+    type?: string
+    features?: Array<{ geometry?: { type?: string; coordinates?: unknown } }>
+  }
+  if (featureCollection?.type !== "FeatureCollection" || !Array.isArray(featureCollection.features)) return segments
+
+  const pushLineSegments = (line: unknown) => {
+    if (!Array.isArray(line)) return
+    const points = line
+      .filter((point): point is [number, number] => Array.isArray(point) && point.length >= 2)
+      .map(([lng, lat]) => [Number(lat), Number(lng)] as [number, number])
+      .filter(([lat, lng]) => Number.isFinite(lat) && Number.isFinite(lng))
+    for (let i = 0; i < points.length - 1; i++) {
+      segments.push({ start: points[i], end: points[i + 1] })
+    }
+  }
+
+  for (const feature of featureCollection.features) {
+    const geometry = feature?.geometry
+    if (!geometry) continue
+    if (geometry.type === "LineString") pushLineSegments(geometry.coordinates)
+    if (geometry.type === "MultiLineString" && Array.isArray(geometry.coordinates)) {
+      for (const line of geometry.coordinates) pushLineSegments(line)
+    }
+  }
+
+  return segments
+}
+
+function calculateDistanceToImblBoundary(lat: number, lng: number): number {
+  if (imblSegments.length === 0) return calculateDistanceToBoundary(lat, lng)
+  let minDistance = Infinity
+  for (const segment of imblSegments) {
+    const distance = pointToSegmentDistance(lat, lng, segment.start[0], segment.start[1], segment.end[0], segment.end[1])
+    if (distance < minDistance) minDistance = distance
+  }
+  return minDistance === Infinity ? 999 : minDistance
+}
+
 function findNearestBoundary(lat: number, lng: number): string {
-  const distance = calculateDistanceToBoundary(lat, lng)
-  if (distance <= BUFFER_ZONE_KM.SAFE) return `SAFE Zone (${BUFFER_ZONE_KM.SAFE} km)`
-  if (distance <= BUFFER_ZONE_KM.WARNING) return `WARNING Zone (${BUFFER_ZONE_KM.WARNING} km)`
+  const distance = calculateDistanceToImblBoundary(lat, lng)
   if (distance <= BUFFER_ZONE_KM.DANGER) return `DANGER Zone (${BUFFER_ZONE_KM.DANGER} km)`
-  return `Beyond ${BUFFER_ZONE_KM.DANGER} km buffer`
+  if (distance <= BUFFER_ZONE_KM.WARNING) return `WARNING Zone (${BUFFER_ZONE_KM.WARNING} km)`
+  if (distance <= BUFFER_ZONE_KM.ALERT) return `ALERT Zone (${BUFFER_ZONE_KM.ALERT} km)`
+  return "Deep Indian Waters. You are safe."
 }
 
 function parseCoastlineFromGeoJson(data: unknown): [number, number][] | null {
@@ -196,16 +191,89 @@ function parseCoastlineFromGeoJson(data: unknown): [number, number][] | null {
   }
   if (featureCollection.type !== "FeatureCollection" || !Array.isArray(featureCollection.features)) return null
 
-  const firstLine = featureCollection.features.find((feature) => feature?.geometry?.type === "LineString")
-  const coords = firstLine?.geometry?.coordinates
-  if (!Array.isArray(coords)) return null
+  const latLngs: [number, number][] = []
+  for (const feature of featureCollection.features) {
+    if (feature?.geometry?.type !== "LineString") continue
+    const coords = feature.geometry.coordinates
+    if (!Array.isArray(coords)) continue
 
-  const latLngs = coords
-    .filter((point): point is [number, number] => Array.isArray(point) && point.length >= 2)
-    .map(([lng, lat]) => [Number(lat), Number(lng)] as [number, number])
-    .filter(([lat, lng]) => Number.isFinite(lat) && Number.isFinite(lng))
+    const segment = coords
+      .filter((point): point is [number, number] => Array.isArray(point) && point.length >= 2)
+      .map(([lng, lat]) => [Number(lat), Number(lng)] as [number, number])
+      .filter(([lat, lng]) => Number.isFinite(lat) && Number.isFinite(lng))
+
+    if (segment.length === 0) continue
+
+    if (latLngs.length > 0) {
+      const [prevLat, prevLng] = latLngs[latLngs.length - 1]
+      const [nextLat, nextLng] = segment[0]
+      if (Math.abs(prevLat - nextLat) < 1e-6 && Math.abs(prevLng - nextLng) < 1e-6) {
+        latLngs.push(...segment.slice(1))
+      } else {
+        latLngs.push(...segment)
+      }
+    } else {
+      latLngs.push(...segment)
+    }
+  }
 
   return latLngs.length > 1 ? latLngs : null
+}
+
+function extractImblLineFeature(data: unknown): turf.Feature<turf.LineString | turf.MultiLineString> | null {
+  if (!data || typeof data !== "object") return null
+
+  const maybeFeature = data as { type?: string; geometry?: { type?: string } }
+  if (
+    maybeFeature.type === "Feature" &&
+    (maybeFeature.geometry?.type === "LineString" || maybeFeature.geometry?.type === "MultiLineString")
+  ) {
+    return maybeFeature as turf.Feature<turf.LineString | turf.MultiLineString>
+  }
+
+  const featureCollection = data as { type?: string; features?: Array<{ geometry?: { type?: string } }> }
+  if (featureCollection.type !== "FeatureCollection" || !Array.isArray(featureCollection.features)) return null
+
+  const lineFeature = featureCollection.features.find(
+    (feature) => feature?.geometry?.type === "LineString" || feature?.geometry?.type === "MultiLineString"
+  )
+
+  return (lineFeature as turf.Feature<turf.LineString | turf.MultiLineString>) ?? null
+}
+
+function buildImblOffsetFeatures(data: unknown) {
+  const sourceLine = extractImblLineFeature(data)
+  if (!sourceLine) return [] as Array<{ name: string; color: string; distanceKm: number; feature: turf.Feature<turf.LineString | turf.MultiLineString> }>
+
+  return IMBL_OFFSET_CONFIG.map((config) => ({
+    name: config.name,
+    color: config.color,
+    distanceKm: config.distanceKm,
+    feature: turf.lineOffset(sourceLine, IMBL_OFFSET_DIRECTION * config.distanceKm, {
+      units: "kilometers",
+    }) as turf.Feature<turf.LineString | turf.MultiLineString>,
+  }))
+}
+
+function getMidpointLatLngFromFeature(feature: turf.Feature<turf.LineString | turf.MultiLineString>): [number, number] | null {
+  const geometry = feature.geometry
+  if (geometry.type === "LineString") {
+    const coords = geometry.coordinates
+    if (!Array.isArray(coords) || coords.length === 0) return null
+    const mid = coords[Math.floor(coords.length / 2)]
+    if (!Array.isArray(mid) || mid.length < 2) return null
+    return [Number(mid[1]), Number(mid[0])]
+  }
+
+  if (geometry.type === "MultiLineString") {
+    const line = geometry.coordinates.find((segment) => Array.isArray(segment) && segment.length > 0)
+    if (!line) return null
+    const mid = line[Math.floor(line.length / 2)]
+    if (!Array.isArray(mid) || mid.length < 2) return null
+    return [Number(mid[1]), Number(mid[0])]
+  }
+
+  return null
 }
 
 // ─── Demo Mode Route (SAFE near coast → WARNING → DANGER farther offshore → back) ──
@@ -298,22 +366,29 @@ export default function LeafletMap({
     })
   }
 
-  const getZoneFromDistance = (distanceKm: number): ZoneStatus => {
-    if (distanceKm <= BUFFER_ZONE_KM.SAFE) return "SAFE"
+  const getZoneFromDistance = (distanceKm: number): GeofenceZoneStatus => {
+    if (distanceKm <= BUFFER_ZONE_KM.DANGER) return "DANGER"
     if (distanceKm <= BUFFER_ZONE_KM.WARNING) return "WARNING"
-    return "DANGER"
+    if (distanceKm <= BUFFER_ZONE_KM.ALERT) return "ALERT"
+    return "CLEAR"
   }
 
-  const updateBoundaryStyles = (zone: ZoneStatus) => {
+  const geofenceZoneToBoatZone = (zone: GeofenceZoneStatus): BoatZoneStatus => {
+    if (zone === "DANGER") return "DANGER"
+    if (zone === "WARNING") return "WARNING"
+    return "SAFE"
+  }
+
+  const updateBoundaryStyles = (zone: GeofenceZoneStatus) => {
     const safeLine = zoneBoundaryRefs.current.safe
     const warningLine = zoneBoundaryRefs.current.warning
     const dangerLine = zoneBoundaryRefs.current.danger
 
     if (safeLine) {
       safeLine.setStyle({
-        color: zone === "SAFE" ? "#22c55e" : "#16a34a",
-        weight: zone === "SAFE" ? 3.2 : 2.5,
-        opacity: zone === "SAFE" ? 1 : 0.85,
+        color: zone === "ALERT" || zone === "CLEAR" ? "#22c55e" : "#16a34a",
+        weight: zone === "ALERT" || zone === "CLEAR" ? 3.2 : 2.5,
+        opacity: zone === "ALERT" || zone === "CLEAR" ? 1 : 0.85,
       })
     }
 
@@ -334,8 +409,8 @@ export default function LeafletMap({
     }
   }
 
-  const processGeofenceState = (lat: number, lng: number): ZoneStatus => {
-    const distance = calculateDistanceToBoundary(lat, lng)
+  const processGeofenceState = (lat: number, lng: number): GeofenceZoneStatus => {
+    const distance = calculateDistanceToImblBoundary(lat, lng)
     const zone = getZoneFromDistance(distance)
     onProximityUpdate(distance)
     onZoneUpdate?.(zone)
@@ -405,12 +480,14 @@ export default function LeafletMap({
     const heading = headingByBoatRef.current.get(boat.boatId) ?? 0
     if (existing) {
       existing.setLatLng([boat.lat, boat.lon])
+      existing.setZIndexOffset(1000)
       existing.setIcon(vesselIcon(boat.zone, selectedId === boat.boatId, heading))
       existing.setTooltipContent(`<b>${boat.boatId}</b><br>Status: ${boat.zone}`)
       existing.setPopupContent(`<b>${boat.boatId}</b><br>Lat: ${boat.lat.toFixed(4)}<br>Lon: ${boat.lon.toFixed(4)}<br>Zone: ${boat.zone}`)
     } else {
       const marker = L.marker([boat.lat, boat.lon], {
         icon: vesselIcon(boat.zone, selectedId === boat.boatId, heading),
+        zIndexOffset: 1000,
       }).addTo(map)
 
       marker.bindTooltip(`<b>${boat.boatId}</b><br>Status: ${boat.zone}`, {
@@ -485,62 +562,122 @@ export default function LeafletMap({
       opacity: 0.95,
     }).addTo(map)
 
-    const renderZoneBoundaries = (coastlineCoords: [number, number][]) => {
+    const renderZoneBoundaries = (
+      coastlineCoords: [number, number][],
+      _coastlineGeoJson: unknown,
+      imblGeoJson: unknown
+    ) => {
+      const safeAddLayer = <T extends L.Layer>(layerName: string, layer: T, details?: Record<string, unknown>): T | null => {
+        try {
+          layer.addTo(map)
+          return layer
+        } catch (error) {
+          console.warn("Skipping invalid map layer", {
+            layer: layerName,
+            ...details,
+            error,
+          })
+          return null
+        }
+      }
+
       initCoastlineSegments(coastlineCoords)
-      const boundaries = buildBoundariesFromCoastline(coastlineCoords)
+      let visibleLimitCount = 0
 
-      boundaries.forEach((boundary) => {
-        const latLngs = boundary.coordinates
+      const safeCoastline = coastlineCoords.filter(([lat, lng]) => Number.isFinite(lat) && Number.isFinite(lng))
+      if (safeCoastline.length > 1) {
+        const coastlineLayer = safeAddLayer("coastline", L.polyline(safeCoastline, {
+          color: "#2563eb",
+          weight: 3,
+          opacity: 0.8,
+          interactive: false,
+        }), { points: safeCoastline.length })
+        if (coastlineLayer) {
+          coastlineLayer.bringToBack()
+          visibleLimitCount += 1
+        }
+      }
 
-        L.polyline(latLngs, {
-          color: boundary.color,
-          weight: boundary.weight + 6,
-          opacity: 0.16,
-          lineCap: "round",
-          lineJoin: "round",
-        }).addTo(map)
+      if (imblGeoJson) {
+        imblSegments = extractImblSegments(imblGeoJson)
+        const imblLayer = safeAddLayer("imbl-main", L.geoJSON(imblGeoJson as any, {
+          style: {
+            color: "#dc2626",
+            weight: 3,
+            dashArray: "10, 10",
+          },
+          interactive: false,
+        }), { segments: imblSegments.length })
+        if (imblLayer) visibleLimitCount += 1
 
-        const line = L.polyline(latLngs, {
-          color: boundary.color,
-          weight: boundary.weight,
-          opacity: boundary.opacity,
-          dashArray: boundary.dashArray ?? undefined,
-          lineCap: "round",
-          lineJoin: "round",
-        }).addTo(map)
+        const offsetFeatures = buildImblOffsetFeatures(imblGeoJson)
+        offsetFeatures.forEach((offset) => {
+          const offsetLayer = safeAddLayer("imbl-offset", L.geoJSON(offset.feature as any, {
+            style: {
+              color: offset.color,
+              weight: 2,
+              dashArray: "5, 5",
+            },
+            interactive: false,
+          }), {
+            name: offset.name,
+            distanceKm: offset.distanceKm,
+          })
+          if (offsetLayer) visibleLimitCount += 1
 
-        if (boundary.zoneType === "SAFE") zoneBoundaryRefs.current.safe = line
-        if (boundary.zoneType === "WARNING") zoneBoundaryRefs.current.warning = line
-        if (boundary.zoneType === "DANGER") zoneBoundaryRefs.current.danger = line
+          const mid = getMidpointLatLngFromFeature(offset.feature)
+          if (!mid) return
 
-        line.bindTooltip(`<b>${boundary.name}</b><br><small>${boundary.description}</small>`, {
-          permanent: false,
-          direction: "center",
-          className: "eez-tooltip",
+          L.marker(mid, {
+            icon: L.divIcon({
+              className: "eez-label",
+              html: `<div style="background:${offset.color};color:#fff;padding:4px 9px;border-radius:7px;font-size:12px;white-space:nowrap;box-shadow:0 2px 10px rgba(0,0,0,0.45);font-weight:700;border:1px solid rgba(255,255,255,0.3);">${offset.name} (${offset.distanceKm} km)</div>`,
+              iconSize: [180, 28],
+              iconAnchor: [90, 14],
+            }),
+          }).addTo(map)
         })
+      }
+      if (!imblGeoJson) {
+        imblSegments = []
+      }
 
-        const mid = latLngs[Math.floor(latLngs.length / 2)]
-        L.marker(mid, {
-          icon: L.divIcon({
-            className: "eez-label",
-            html: `<div style="background:${boundary.color};color:#fff;padding:5px 11px;border-radius:7px;font-size:13px;white-space:nowrap;box-shadow:0 2px 10px rgba(0,0,0,0.5);font-weight:700;border:1px solid rgba(255,255,255,0.3);">${boundary.name}</div>`,
-            iconSize: [230, 30],
-            iconAnchor: [115, 15],
-          }),
-        }).addTo(map)
-      })
-
-      setBoundaryCount(boundaries.length)
+      zoneBoundaryRefs.current.safe = null
+      zoneBoundaryRefs.current.warning = null
+      zoneBoundaryRefs.current.danger = null
+      setBoundaryCount(visibleLimitCount)
     }
 
-    fetch("/data/tamil-nadu-coastline.geojson")
-      .then((response) => response.ok ? response.json() : null)
-      .then((geoJson) => {
-        const coastline = parseCoastlineFromGeoJson(geoJson) || TN_COASTLINE_FALLBACK
-        renderZoneBoundaries(coastline)
+    Promise.all([
+      fetch("/data/tn_coastline.json").then((response) => response.ok ? response.json() : null),
+      fetch("/data/imbl_boundary.json").then((response) => response.ok ? response.json() : null),
+    ])
+      .then(([coastGeoJson, imblGeoJson]) => {
+        const coastline = parseCoastlineFromGeoJson(coastGeoJson) || TN_COASTLINE_FALLBACK
+        renderZoneBoundaries(
+          coastline,
+          coastGeoJson ?? {
+            type: "FeatureCollection",
+            features: [],
+          },
+          imblGeoJson
+        )
       })
       .catch(() => {
-        renderZoneBoundaries(TN_COASTLINE_FALLBACK)
+        const fallbackGeoJson = {
+          type: "FeatureCollection",
+          features: [
+            {
+              type: "Feature",
+              properties: {},
+              geometry: {
+                type: "LineString",
+                coordinates: TN_COASTLINE_FALLBACK.map(([lat, lng]) => [lng, lat]),
+              },
+            },
+          ],
+        }
+        renderZoneBoundaries(TN_COASTLINE_FALLBACK, fallbackGeoJson, null)
       })
 
     // Initial selected vessel fallback
@@ -765,8 +902,8 @@ export default function LeafletMap({
       const demoBoatId = "DEMO-BOAT1"
       selectedBoatIdRef.current = demoBoatId
       primaryPathBoatIdRef.current = demoBoatId
-      const demoZone = getZoneFromDistance(calculateDistanceToBoundary(lat, lng))
-      upsertBoat({ boatId: demoBoatId, lat, lon: lng, zone: demoZone }, { shouldPan: true })
+      const demoZone = getZoneFromDistance(calculateDistanceToImblBoundary(lat, lng))
+      upsertBoat({ boatId: demoBoatId, lat, lon: lng, zone: geofenceZoneToBoatZone(demoZone) }, { shouldPan: true })
       demoIndexRef.current = (demoIndexRef.current + 1) % DEMO_ROUTE.length
     }, 250)
 
@@ -830,27 +967,4 @@ export default function LeafletMap({
   )
 }
 
-// Create a fixed-distance offshore line from coastline by pushing points away from TN land centroid.
-function offsetFromCoastline(
-  points: [number, number][],
-  offsetKm: number,
-  landCentroid: [number, number]
-): [number, number][] {
-  return points.map(([lat, lng]) => {
-    const latScaleKm = 111
-    const lngScaleKm = 111 * Math.cos((lat * Math.PI) / 180)
-
-    const awayLatKm = (lat - landCentroid[0]) * latScaleKm
-    const awayLngKm = (lng - landCentroid[1]) * lngScaleKm
-    const norm = Math.hypot(awayLatKm, awayLngKm) || 1
-
-    const shiftLatKm = (awayLatKm / norm) * offsetKm
-    const shiftLngKm = (awayLngKm / norm) * offsetKm
-
-    return [
-      lat + shiftLatKm / latScaleKm,
-      lng + shiftLngKm / (lngScaleKm || 1),
-    ]
-  })
-}
 

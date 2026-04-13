@@ -1,21 +1,13 @@
 ﻿import { useState, useEffect, useRef } from "react";
 import MapView from "./components/MapView";
 import "./App.css";
-
-const BOUNDARY_POINTS = [
-  [9.50, 80.30], [9.70, 80.20], [9.95, 80.10], [10.15, 79.95], [10.35, 79.80],
-];
-
-const GEOFENCE_CENTER = [9.35, 79.49];
-const GEOFENCE_THRESHOLDS = {
-  SAFE_KM: 12,
-  WARNING_KM: 25,
-};
+import imblBoundary from "../../backend-api/src/imbl_boundary.json";
 
 const ZONE_MESSAGES = {
-  SAFE: "You are in safe waters",
-  WARNING: "Approaching restricted maritime boundary",
-  DANGER: "You have crossed the maritime boundary! Immediate action required",
+  Danger: "CRITICAL: Turn back immediately!",
+  Warning: "WARNING: 12km Zone. Proceed with caution.",
+  Alert: "ALERT: Entered 20km Border Monitoring Zone.",
+  Clear: "Deep Indian Waters. You are safe.",
 };
 
 const MAX_PATH = 80;
@@ -38,19 +30,100 @@ function haversineDistanceKm(lat1, lon1, lat2, lon2) {
   return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
 }
 
+function pointToSegmentDistanceKm(pLat, pLon, lat1, lon1, lat2, lon2) {
+  const d1 = haversineDistanceKm(pLat, pLon, lat1, lon1);
+  const d2 = haversineDistanceKm(pLat, pLon, lat2, lon2);
+  const segmentLength = haversineDistanceKm(lat1, lon1, lat2, lon2);
+
+  if (segmentLength < 0.001) return Math.min(d1, d2);
+
+  const t = Math.max(
+    0,
+    Math.min(
+      1,
+      ((pLat - lat1) * (lat2 - lat1) + (pLon - lon1) * (lon2 - lon1)) /
+        ((lat2 - lat1) * (lat2 - lat1) + (lon2 - lon1) * (lon2 - lon1))
+    )
+  );
+
+  const projLat = lat1 + t * (lat2 - lat1);
+  const projLon = lon1 + t * (lon2 - lon1);
+  return haversineDistanceKm(pLat, pLon, projLat, projLon);
+}
+
+function extractImblSegments(geoJson) {
+  const segments = [];
+  if (!geoJson || geoJson.type !== "FeatureCollection" || !Array.isArray(geoJson.features)) return segments;
+
+  geoJson.features.forEach((feature) => {
+    const geometry = feature?.geometry;
+    if (!geometry) return;
+
+    if (geometry.type === "LineString" && Array.isArray(geometry.coordinates)) {
+      for (let i = 0; i < geometry.coordinates.length - 1; i += 1) {
+        const [lon1, lat1] = geometry.coordinates[i] || [];
+        const [lon2, lat2] = geometry.coordinates[i + 1] || [];
+        if ([lat1, lon1, lat2, lon2].every(Number.isFinite)) {
+          segments.push({ lat1, lon1, lat2, lon2 });
+        }
+      }
+    }
+
+    if (geometry.type === "MultiLineString" && Array.isArray(geometry.coordinates)) {
+      geometry.coordinates.forEach((line) => {
+        if (!Array.isArray(line)) return;
+        for (let i = 0; i < line.length - 1; i += 1) {
+          const [lon1, lat1] = line[i] || [];
+          const [lon2, lat2] = line[i + 1] || [];
+          if ([lat1, lon1, lat2, lon2].every(Number.isFinite)) {
+            segments.push({ lat1, lon1, lat2, lon2 });
+          }
+        }
+      });
+    }
+  });
+
+  return segments;
+}
+
+const IMBL_SEGMENTS = extractImblSegments(imblBoundary);
+
+function distanceToImblKm(lat, lon) {
+  if (IMBL_SEGMENTS.length === 0) return Infinity;
+  let minDistance = Infinity;
+  IMBL_SEGMENTS.forEach((segment) => {
+    const d = pointToSegmentDistanceKm(lat, lon, segment.lat1, segment.lon1, segment.lat2, segment.lon2);
+    if (d < minDistance) minDistance = d;
+  });
+  return minDistance;
+}
+
 function getGeofenceStatus(lat, lon) {
-  const distanceKm = haversineDistanceKm(lat, lon, GEOFENCE_CENTER[0], GEOFENCE_CENTER[1]);
-  const zone =
-    distanceKm < GEOFENCE_THRESHOLDS.SAFE_KM ? "SAFE" :
-    distanceKm < GEOFENCE_THRESHOLDS.WARNING_KM ? "WARNING" :
-    "DANGER";
-  return { zone, distanceKm };
+  const distanceKm = distanceToImblKm(lat, lon);
+  let zone;
+  let message;
+
+  if (distanceKm <= 5) {
+    zone = "Danger";
+    message = "CRITICAL: Turn back immediately!";
+  } else if (distanceKm <= 12) {
+    zone = "Warning";
+    message = "WARNING: 12km Zone. Proceed with caution.";
+  } else if (distanceKm <= 20) {
+    zone = "Alert";
+    message = "ALERT: Entered 20km Border Monitoring Zone.";
+  } else {
+    zone = "Clear";
+    message = "Deep Indian Waters. You are safe.";
+  }
+
+  return { zone, distanceKm, message };
 }
 
 export default function App() {
   const [boatPosition, setBoatPosition] = useState([9.30, 79.80]);
   const [boatPath, setBoatPath]         = useState([[9.30, 79.80]]);
-  const [zone, setZone]                 = useState("UNKNOWN");
+  const [zone, setZone]                 = useState("Clear");
   const [distance, setDistance]         = useState(null);
   const [speed, setSpeed]               = useState(null);
   const [status, setStatus]             = useState("connecting");
@@ -61,7 +134,7 @@ export default function App() {
   const [, setTick]                     = useState(0);
   const prevPosRef                      = useRef(null);
   const prevTimeRef                     = useRef(null);
-  const prevZoneRef                     = useRef("UNKNOWN");
+  const prevZoneRef                     = useRef("Clear");
 
   useEffect(() => {
     const id = setInterval(() => setTick(t => t + 1), 5000);
@@ -71,11 +144,6 @@ export default function App() {
   useEffect(() => {
     const previousZone = prevZoneRef.current;
     if (zone === previousZone) return;
-    if (zone === "UNKNOWN") {
-      prevZoneRef.current = zone;
-      return;
-    }
-
     const toast = {
       id: Date.now() + Math.floor(Math.random() * 1000),
       zone,
@@ -87,7 +155,7 @@ export default function App() {
       setZoneToasts((prev) => prev.filter((item) => item.id !== toast.id));
     }, 5000);
 
-    if (zone === "DANGER") setDangerModalOpen(true);
+    if (zone === "Danger") setDangerModalOpen(true);
     prevZoneRef.current = zone;
 
     return () => window.clearTimeout(timeoutId);
@@ -147,9 +215,9 @@ export default function App() {
   }, []);
 
   const zoneCls =
-    zone === "DANGER"  ? "zone-danger"  :
-    zone === "WARNING" ? "zone-warning" :
-    zone === "SAFE"    ? "zone-safe"    : "zone-unknown";
+    zone === "Danger"  ? "zone-danger"  :
+    zone === "Warning" ? "zone-warning" :
+    zone === "Alert"   ? "zone-safe"    : "zone-unknown";
 
   const statusLabel =
     status === "live"    ? "Live"        :
@@ -170,12 +238,12 @@ export default function App() {
         ))}
       </div>
 
-      {dangerModalOpen && zone === "DANGER" && (
+      {dangerModalOpen && zone === "Danger" && (
         <div className="zone-modal-backdrop" role="presentation">
           <div className="zone-modal" role="alertdialog" aria-modal="true" aria-label="Danger zone alert">
             <p className="zone-modal-kicker">Danger Alert</p>
             <h2 className="zone-modal-title">Maritime Boundary Breach</h2>
-            <p className="zone-modal-text">{ZONE_MESSAGES.DANGER}</p>
+            <p className="zone-modal-text">{ZONE_MESSAGES.Danger}</p>
             <p className="zone-modal-sub">Immediate course correction is required to return to safe waters.</p>
             <div className="zone-modal-actions">
               <button className="zone-modal-btn" onClick={() => setDangerModalOpen(false)}>Acknowledge</button>
@@ -203,9 +271,10 @@ export default function App() {
         <div className={`zone-badge ${zoneCls}`}>
           <span className={`zone-dot ${zoneCls}-dot`} />
           <span className="zone-label">{zone}</span>
-          {zone === "DANGER"  && <span className="zone-tag">Restricted Waters</span>}
-          {zone === "WARNING" && <span className="zone-tag">Boundary Near</span>}
-          {zone === "SAFE"    && <span className="zone-tag">Safe Zone</span>}
+          {zone === "Danger"  && <span className="zone-tag">Restricted Waters</span>}
+          {zone === "Warning" && <span className="zone-tag">Boundary Near</span>}
+          {zone === "Alert"   && <span className="zone-tag">20km Monitoring Zone</span>}
+          {zone === "Clear"   && <span className="zone-tag">Deep Indian Waters</span>}
         </div>
 
         {/* Connection status */}
@@ -230,9 +299,9 @@ export default function App() {
             icon={<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><circle cx="12" cy="12" r="10"/><circle cx="12" cy="12" r="6"/><circle cx="12" cy="12" r="2"/><path strokeLinecap="round" d="M12 2v4M12 18v4M2 12h4M18 12h4"/></svg>}
             label="Distance to Border"
             value={distance !== null ? `${distance.toFixed(2)} km` : "--"}
-            sub={zone !== "UNKNOWN" ? zone : "Calculating"}
-            accent={zone === "DANGER" ? "red" : zone === "WARNING" ? "amber" : "green"}
-            alert={zone === "DANGER" || zone === "WARNING"}
+            sub={zone}
+            accent={zone === "Danger" ? "red" : zone === "Warning" ? "amber" : "green"}
+            alert={zone === "Danger" || zone === "Warning"}
           />
           <MetricCard
             icon={<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path strokeLinecap="round" strokeLinejoin="round" d="M13 10V3L4 14h7v7l9-11h-7z"/></svg>}
@@ -269,13 +338,10 @@ export default function App() {
       <main className="map-area">
         <MapView
           boatPosition={boatPosition}
-          boundaryPoints={BOUNDARY_POINTS}
           boatPath={boatPath}
           followVessel={followVessel}
           onManualPan={() => setFollowVessel(false)}
           zone={zone}
-          geofenceCenter={GEOFENCE_CENTER}
-          geofenceRings={GEOFENCE_THRESHOLDS}
         />
       </main>
     </div>
