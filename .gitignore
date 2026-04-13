@@ -7,3 +7,4 @@ apps/**/node_modules/
 apps/**/.next/
 apps/backend-api/boat_data.db
 *.log
+.vercel
