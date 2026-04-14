@@ -1,4 +1,3 @@
-// src/components/MapView.jsx
 import { MapContainer, TileLayer, Polyline, Marker, GeoJSON, useMap, useMapEvents } from 'react-leaflet';
 import L from 'leaflet';
 import 'leaflet/dist/leaflet.css';
@@ -7,34 +6,61 @@ import { useMemo } from 'react';
 import tnCoastline from '../../../backend-api/src/tn_coastline.json';
 import imblBoundary from '../../../backend-api/src/imbl_boundary.json';
 
-// Fix for default Leaflet icons in React
-import icon from 'leaflet/dist/images/marker-icon.png';
-import iconShadow from 'leaflet/dist/images/marker-shadow.png';
-// Custom vessel marker icon (gradient pin with pulse ring)
+// Custom vessel marker icon with radar pulse SVG
 function createVesselIcon(zone) {
-  const color = zone === 'Danger' ? '#ef4444' : zone === 'Warning' ? '#f59e0b' : zone === 'Alert' ? '#22c55e' : '#06b6d4';
+  const colorMap = {
+    'Danger': '#EF4444',
+    'Warning': '#F59E0B',
+    'Alert': '#10B981',
+    'Clear': '#06b6d4',
+  };
+  const color = colorMap[zone] || '#06b6d4';
+  
   return L.divIcon({
-    className: '',
+    className: 'custom-vessel-marker',
     html: `
-      <div style="position:relative;width:40px;height:40px;">
-        <div style="position:absolute;inset:-4px;border-radius:50%;background:${color};opacity:0.2;animation:aegisPing 1.5s infinite;"></div>
-        <svg width="40" height="40" viewBox="0 0 24 24" style="position:absolute;left:0;top:0;display:block;filter:drop-shadow(0 3px 6px rgba(0,0,0,0.5))">
+      <div style="position:relative;width:48px;height:48px;">
+        <svg 
+          width="48" 
+          height="48" 
+          viewBox="0 0 48 48" 
+          style="position:absolute;left:0;top:0;display:block;filter:drop-shadow(0 4px 8px rgba(0,0,0,0.6));"
+        >
           <defs>
-            <linearGradient id="vg${zone}" x1="0%" y1="0%" x2="100%" y2="100%">
+            <linearGradient id="vesselGrad${zone}" x1="0%" y1="0%" x2="100%" y2="100%">
               <stop offset="0%" stop-color="${color}"/>
-              <stop offset="100%" stop-color="${color}88"/>
+              <stop offset="100%" stop-color="${color}" stop-opacity="0.6"/>
             </linearGradient>
+            <style>
+              @keyframes radarPulse {
+                0% { r: 0; opacity: 0.8; }
+                100% { r: 32; opacity: 0; }
+              }
+            </style>
           </defs>
-          <path fill="url(#vg${zone})" d="M12 2C8.13 2 5 5.13 5 9c0 5.25 7 13 7 13s7-7.75 7-13c0-3.87-3.13-7-7-7zm0 9.5c-1.38 0-2.5-1.12-2.5-2.5s1.12-2.5 2.5-2.5 2.5 1.12 2.5 2.5-1.12 2.5-2.5 2.5z"/>
+          
+          <!-- Radar pulse circles -->
+          <circle cx="24" cy="24" r="0" stroke="${color}" stroke-width="2" fill="none" 
+            style="animation: radarPulse 1.8s ease-out infinite;" />
+          <circle cx="24" cy="24" r="0" stroke="${color}" stroke-width="1.5" fill="none" 
+            style="animation: radarPulse 1.8s ease-out infinite 0.6s;" opacity="0.6" />
+          
+          <!-- Vessel pin -->
+          <path fill="url(#vesselGrad${zone})" d="M24 4C16.27 4 10 10.27 10 18c0 9.66 14 22 14 22s14-12.34 14-22c0-7.73-6.27-14-14-14zm0 18c-2.21 0-4-1.79-4-4s1.79-4 4-4 4 1.79 4 4-1.79 4-4 4z"/>
+          
+          <!-- Center glow -->
+          <circle cx="24" cy="24" r="4" fill="${color}" opacity="0.9"/>
+          <circle cx="24" cy="24" r="2" fill="white" opacity="0.9"/>
         </svg>
-      </div>`,
-    iconSize: [40, 40],
-    iconAnchor: [20, 20],
+      </div>
+    `,
+    iconSize: [48, 48],
+    iconAnchor: [24, 24],
+    popupAnchor: [0, -24],
   });
 }
 
-// Helper component to smoothly pan the map to the boat's location
-// Pan only when followVessel is enabled
+// Helper component to smoothly pan map to vessel
 function MapController({ center, followVessel }) {
   const map = useMap();
   useEffect(() => {
@@ -43,7 +69,7 @@ function MapController({ center, followVessel }) {
   return null;
 }
 
-// Detect user drag to disable following
+// Detect user drag to disable auto-follow
 function DragDetector({ onDrag }) {
   useMapEvents({ dragstart: onDrag });
   return null;
@@ -54,11 +80,20 @@ export default function MapView({
   boatPath,
   followVessel = true,
   onManualPan,
-  zone = 'SAFE',
+  zone = 'Clear',
 }) {
   const vesselIcon = useMemo(() => createVesselIcon(zone), [zone]);
-  const coastlineStyle = useMemo(() => ({ color: '#2563eb', weight: 3, opacity: 0.8 }), []);
-  const imblBoundaryStyle = useMemo(() => ({ color: '#dc2626', weight: 3, dashArray: '10, 10' }), []);
+  const coastlineStyle = useMemo(() => ({ 
+    color: '#3b82f6', 
+    weight: 2.5, 
+    opacity: 0.7 
+  }), []);
+  const imblBoundaryStyle = useMemo(() => ({ 
+    color: '#EF4444', 
+    weight: 2, 
+    dashArray: '8, 6',
+    opacity: 0.8,
+  }), []);
 
   return (
     <MapContainer 
@@ -66,36 +101,37 @@ export default function MapView({
       zoom={10} 
       style={{ flex: 1, height: '100vh', width: '100%', zIndex: 0 }} 
     >
-      {/* Dark/ocean tile layer */}
+      {/* Dark CartoDB tile layer */}
       <TileLayer
-        url="https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}"
-        attribution='Tiles &copy; Esri | ESRI'
-        maxZoom={18}
+        url="https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png"
+        attribution='&copy; CartoDB'
+        maxZoom={19}
       />
-      <TileLayer
-        url="https://{s}.basemaps.cartocdn.com/light_only_labels/{z}/{x}/{y}{r}.png"
-        attribution=""
-        maxZoom={18}
-      />
+      
+      {/* Coastline & IMBL boundaries */}
       <GeoJSON data={tnCoastline} style={coastlineStyle} interactive={false} />
       <GeoJSON data={imblBoundary} style={imblBoundaryStyle} interactive={false} />
-      {/* Path trail */}
+      
+      {/* Path trail with glassmorphic style */}
       {boatPath.length > 1 && (
         <Polyline
           positions={boatPath}
-          pathOptions={{ color: '#38bdf8', weight: 2.5, opacity: 0.7, pane: 'overlayPane', interactive: false }}
+          pathOptions={{ 
+            color: '#06b6d4', 
+            weight: 2, 
+            opacity: 0.6,
+            pane: 'overlayPane', 
+            interactive: false,
+            dashArray: '4, 4',
+          }}
         />
       )}
+      
+      {/* Vessel marker with radar pulse */}
       <Marker position={boatPosition} icon={vesselIcon} />
+      
       <MapController center={boatPosition} followVessel={followVessel} />
       <DragDetector onDrag={onManualPan} />
-      <style>{`
-        @keyframes aegisPing {
-          0%  { transform: scale(1);   opacity: 0.25; }
-          70% { transform: scale(2.2); opacity: 0;    }
-          100%{ transform: scale(2.2); opacity: 0;    }
-        }
-      `}</style>
     </MapContainer>
   );
-} 
+}
