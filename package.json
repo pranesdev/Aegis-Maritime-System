@@ -2,9 +2,9 @@
   "name": "aegis-maritime-system",
   "private": true,
   "scripts": {
-    "dev": "concurrently -k -n backend,vite,next -c blue,green,magenta \"npm --prefix apps/backend-api run dev\" \"npm --prefix apps/dashboard-vite run dev\" \"npm --prefix apps/dashboard-next run dev\"",
-    "dev:default": "concurrently -k -n backend,next -c blue,magenta \"npm --prefix apps/backend-api run dev\" \"npm --prefix apps/dashboard-next run dev\"",
-    "dev:next-stack": "concurrently -k -n backend,next -c blue,magenta \"npm --prefix apps/backend-api run dev\" \"npm --prefix apps/dashboard-next run dev\"",
+    "dev": "concurrently -k -n backend,vite,next -c blue,green,magenta \"npm --prefix apps/backend-api run dev\" \"npm --prefix apps/dashboard-vite run dev\" \"npm --prefix apps/dashboard-next run dev -- -p 3003\"",
+    "dev:default": "concurrently -k -n backend,next -c blue,magenta \"npm --prefix apps/backend-api run dev\" \"npm --prefix apps/dashboard-next run dev -- -p 3003\"",
+    "dev:next-stack": "concurrently -k -n backend,next -c blue,magenta \"npm --prefix apps/backend-api run dev\" \"npm --prefix apps/dashboard-next run dev -- -p 3003\"",
     "dev:vite-stack": "concurrently -k -n backend,vite -c blue,green \"npm --prefix apps/backend-api run dev\" \"npm --prefix apps/dashboard-vite run dev\"",
     "dev:backend": "npm --prefix apps/backend-api run dev",
     "dev:vite": "npm --prefix apps/dashboard-vite run dev",
@@ -17,7 +17,7 @@
     "stop:all": "npm run stop"
   },
   "dependencies": {
-    "axios": "^1.14.0",
+    "axios": "^1.15.0",
     "serialport": "^13.0.0"
   },
   "devDependencies": {

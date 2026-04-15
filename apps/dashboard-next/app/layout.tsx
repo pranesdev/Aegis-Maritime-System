@@ -11,11 +11,17 @@ export const metadata: Metadata = {
   title: 'Smart Maritime Boundary Monitoring System',
   description: 'Created with v0',
   generator: 'v0.app',
-  viewport: 'width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no',
   icons: {
     icon: '/image.png',
     apple: '/image.png',
   },
+}
+
+export const viewport = {
+  width: 'device-width',
+  initialScale: 1,
+  maximumScale: 1,
+  userScalable: false,
 }
 
 export default function RootLayout({

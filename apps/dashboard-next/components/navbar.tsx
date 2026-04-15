@@ -13,6 +13,11 @@ export default function Navbar() {
   const pathname = usePathname()
   const [menuOpen, setMenuOpen] = useState(false)
 
+  // Hide navbar on login page
+  if (pathname === "/login") {
+    return null
+  }
+
   const activeLabel = NAV_LINKS.find((l) => l.href === pathname)?.label ?? "Menu"
 
   return (
@@ -27,7 +32,7 @@ export default function Navbar() {
             </svg>
           </div>
           <div>
-            <p className="text-sm font-bold text-white leading-tight">Maritime Boundary Detection</p>
+            <p className="text-sm font-bold text-white leading-tight">Smart Maritime Boundary Detection System</p>
             <p className="text-[10px] text-cyan-400/70 tracking-widest uppercase">AEGIS</p>
           </div>
         </div>

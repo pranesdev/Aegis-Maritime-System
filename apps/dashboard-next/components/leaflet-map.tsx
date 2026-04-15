@@ -245,14 +245,22 @@ function buildImblOffsetFeatures(data: unknown) {
   const sourceLine = extractImblLineFeature(data)
   if (!sourceLine) return [] as Array<{ name: string; color: string; distanceKm: number; feature: turf.Feature<turf.LineString | turf.MultiLineString> }>
 
-  return IMBL_OFFSET_CONFIG.map((config) => ({
-    name: config.name,
-    color: config.color,
-    distanceKm: config.distanceKm,
-    feature: turf.lineOffset(sourceLine, IMBL_OFFSET_DIRECTION * config.distanceKm, {
-      units: "kilometers",
-    }) as turf.Feature<turf.LineString | turf.MultiLineString>,
-  }))
+  return IMBL_OFFSET_CONFIG.map((config) => {
+    try {
+      const feature = turf.lineOffset(sourceLine, IMBL_OFFSET_DIRECTION * config.distanceKm, {
+        units: "kilometers",
+      }) as turf.Feature<turf.LineString | turf.MultiLineString>
+      return {
+        name: config.name,
+        color: config.color,
+        distanceKm: config.distanceKm,
+        feature,
+      }
+    } catch (error) {
+      console.warn("Failed to create IMBL offset feature", { config, error: error instanceof Error ? error.message : String(error) })
+      return null
+    }
+  }).filter(Boolean) as Array<{ name: string; color: string; distanceKm: number; feature: turf.Feature<turf.LineString | turf.MultiLineString> }>
 }
 
 function getMidpointLatLngFromFeature(feature: turf.Feature<turf.LineString | turf.MultiLineString>): [number, number] | null {
@@ -346,23 +354,30 @@ export default function LeafletMap({
     warning: null,
     danger: null,
   })
+  const trajectoryPolylineRef = useRef<L.Polyline | null>(null)
 
   const normalizeZone = (zone: unknown): ZoneWithUnknown => {
     if (zone === "SAFE" || zone === "WARNING" || zone === "DANGER") return zone
     return "UNKNOWN"
   }
 
-  const vesselIcon = (zone: ZoneWithUnknown, selected: boolean, _headingDeg: number) => {
-    const color = zone === "DANGER" ? "#ef4444" : zone === "WARNING" ? "#f59e0b" : zone === "SAFE" ? "#22c55e" : "#06b6d4"
+  const vesselIcon = (zone: ZoneWithUnknown, selected: boolean, headingDeg: number) => {
+    const ringColor = zone === "DANGER" ? "#ff4a4a" : zone === "WARNING" ? "#fde047" : zone === "SAFE" ? "#5effa8" : "#38bdf8"
     return L.divIcon({
-      className: "vessel-marker",
+      className: `vessel-marker ${selected ? "selected" : ""}`,
       html: `
-        <div style="width:18px;height:18px;border-radius:999px;background:${color};border:2px solid ${selected ? "#fde047" : "#ffffff"};box-shadow:${selected ? "0 0 0 2px rgba(253,224,71,0.35)" : "0 0 0 1px rgba(15,23,42,0.55)"};"></div>
+        <div class="boat-marker-wrapper ${selected ? "selected" : ""}" style="transform: rotate(${headingDeg}deg); --ring-color: ${ringColor};">
+          <div class="boat-marker-radar">
+            <span class="boat-radar-ring"></span>
+            <span class="boat-radar-ring boat-radar-ring--delay"></span>
+          </div>
+          <img src="/icons/boat-1.png" class="boat-marker-icon" alt="Boat marker" />
+        </div>
       `,
-      iconSize: [18, 18],
-      iconAnchor: [9, 9],
-      tooltipAnchor: [0, -12],
-      popupAnchor: [0, -10],
+      iconSize: [48, 48],
+      iconAnchor: [24, 36],
+      tooltipAnchor: [0, -18],
+      popupAnchor: [0, -20],
     })
   }
 
@@ -419,6 +434,20 @@ export default function LeafletMap({
     return zone
   }
 
+  const getZoneColor = (zone: ZoneWithUnknown) =>
+    zone === "DANGER" ? "#ff4a4a" : zone === "WARNING" ? "#fde047" : zone === "SAFE" ? "#5effa8" : "#38bdf8"
+
+  const updateMarkerAppearance = (marker: L.Marker, boat: BoatMarkerData, selected: boolean) => {
+    const element = marker.getElement() as HTMLElement | null
+    if (!element) return
+
+    const wrapper = element.querySelector(".boat-marker-wrapper") as HTMLElement | null
+    if (!wrapper) return
+
+    wrapper.classList.toggle("selected", selected)
+    wrapper.style.setProperty("--ring-color", getZoneColor(boat.zone))
+  }
+
   const emitBoats = () => {
     const boats = Array.from(boatDataByIdRef.current.values()).sort((a, b) => a.boatId.localeCompare(b.boatId))
     onBoatsUpdate?.(boats)
@@ -429,8 +458,7 @@ export default function LeafletMap({
     for (const [id, marker] of markerByBoatRef.current.entries()) {
       const boat = boatDataByIdRef.current.get(id)
       if (!boat) continue
-      const heading = headingByBoatRef.current.get(id) ?? 0
-      marker.setIcon(vesselIcon(boat.zone, selected === id, heading))
+      updateMarkerAppearance(marker, boat, selected === id)
       marker.setTooltipContent(`<b>${boat.boatId}</b><br>Status: ${boat.zone}`)
     }
   }
@@ -440,17 +468,62 @@ export default function LeafletMap({
     processGeofenceState(boat.lat, boat.lon)
 
     const prev = lastPositionByBoatRef.current.get(boat.boatId)
+    let speedKnots = 0
     if (typeof directSpeed === "number" && Number.isFinite(directSpeed) && directSpeed >= 0) {
-      onSpeedUpdate(Math.min(directSpeed, 120))
+      speedKnots = Math.min(directSpeed, 120)
+      onSpeedUpdate(speedKnots)
     } else if (prev) {
       const timeDiff = (currentTime - prev.time) / 1000 / 3600
       if (timeDiff > 0) {
         const distKm = haversineDistance(boat.lat, boat.lon, prev.lat, prev.lng)
-        const speedKnots = (distKm / timeDiff) * 0.539957
-        if (Number.isFinite(speedKnots) && speedKnots >= 0) onSpeedUpdate(Math.min(speedKnots, 120))
+        speedKnots = (distKm / timeDiff) * 0.539957
+        if (Number.isFinite(speedKnots) && speedKnots >= 0) {
+          speedKnots = Math.min(speedKnots, 120)
+          onSpeedUpdate(speedKnots)
+        }
       }
     } else {
       onSpeedUpdate(0)
+    }
+
+    // Calculate and update predictive trajectory for selected boat
+    if (primaryPathBoatIdRef.current === boat.boatId && speedKnots > 0) {
+      const heading = headingByBoatRef.current.get(boat.boatId) ?? 0
+      const speedKmh = speedKnots * 1.852 // Convert knots to km/h
+      const timeHours = 5 / 60 // 5 minutes in hours
+      const distanceKm = speedKmh * timeHours
+
+      try {
+        const currentPoint = turf.point([boat.lon, boat.lat])
+        const projectedPoint = turf.destination(currentPoint, distanceKm, heading, {
+          units: "kilometers",
+        })
+        const projectedCoords = projectedPoint.geometry.coordinates // [lng, lat]
+        const trajectoryCoords: [number, number][] = [[boat.lat, boat.lon], [projectedCoords[1], projectedCoords[0]]]
+
+        if (!trajectoryPolylineRef.current) {
+          trajectoryPolylineRef.current = L.polyline(trajectoryCoords, {
+            color: "#22d3ee",
+            weight: 3,
+            opacity: 0.8,
+            dashArray: "5, 10",
+          }).addTo(mapInstanceRef.current!)
+        } else {
+          trajectoryPolylineRef.current.setLatLngs(trajectoryCoords)
+        }
+      } catch (error) {
+        console.warn("Failed to calculate predictive trajectory", { boatId: boat.boatId, error })
+        if (trajectoryPolylineRef.current) {
+          trajectoryPolylineRef.current.remove()
+          trajectoryPolylineRef.current = null
+        }
+      }
+    } else {
+      // Remove trajectory if not selected or no speed
+      if (trajectoryPolylineRef.current) {
+        trajectoryPolylineRef.current.remove()
+        trajectoryPolylineRef.current = null
+      }
     }
 
     if (primaryPathBoatIdRef.current === boat.boatId) {
@@ -481,7 +554,7 @@ export default function LeafletMap({
     if (existing) {
       existing.setLatLng([boat.lat, boat.lon])
       existing.setZIndexOffset(1000)
-      existing.setIcon(vesselIcon(boat.zone, selectedId === boat.boatId, heading))
+      updateMarkerAppearance(existing, boat, selectedId === boat.boatId)
       existing.setTooltipContent(`<b>${boat.boatId}</b><br>Status: ${boat.zone}`)
       existing.setPopupContent(`<b>${boat.boatId}</b><br>Lat: ${boat.lat.toFixed(4)}<br>Lon: ${boat.lon.toFixed(4)}<br>Zone: ${boat.zone}`)
     } else {
@@ -548,12 +621,12 @@ export default function LeafletMap({
       wheelPxPerZoomLevel: 120,
     })
 
-    // Add satellite/ocean tile layer (free, no API key)
+    // Add satellite/ocean tile layer
     L.tileLayer("https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}", {
       attribution: 'Tiles &copy; Esri | EEZ Data &copy; Marine Regions',
       maxZoom: 19,
     }).addTo(map)
-
+    
     // Add a labels layer with larger, clearer place names on satellite view
     L.tileLayer("https://services.arcgisonline.com/ArcGIS/rest/services/Reference/World_Boundaries_and_Places/MapServer/tile/{z}/{y}/{x}", {
       attribution: '',
@@ -567,75 +640,115 @@ export default function LeafletMap({
       _coastlineGeoJson: unknown,
       imblGeoJson: unknown
     ) => {
+      if (!map._container) {
+        console.warn("Map container not ready, skipping boundary rendering")
+        return
+      }
+
       const safeAddLayer = <T extends L.Layer>(layerName: string, layer: T, details?: Record<string, unknown>): T | null => {
         try {
           layer.addTo(map)
           return layer
         } catch (error) {
+          const message = error instanceof Error ? error.message : String(error)
           console.warn("Skipping invalid map layer", {
             layer: layerName,
             ...details,
-            error,
+            error: message,
           })
           return null
         }
+      }
+
+      const geoJsonOptions = {
+        coordsToLatLng: (coords: [number, number]) => L.latLng(coords[1], coords[0]),
       }
 
       initCoastlineSegments(coastlineCoords)
       let visibleLimitCount = 0
 
       const safeCoastline = coastlineCoords.filter(([lat, lng]) => Number.isFinite(lat) && Number.isFinite(lng))
-      if (safeCoastline.length > 1) {
-        const coastlineLayer = safeAddLayer("coastline", L.polyline(safeCoastline, {
-          color: "#2563eb",
-          weight: 3,
-          opacity: 0.8,
-          interactive: false,
-        }), { points: safeCoastline.length })
-        if (coastlineLayer) {
-          coastlineLayer.bringToBack()
-          visibleLimitCount += 1
+      const validCoastline = safeCoastline.length > 1 && safeCoastline.every((point) => Array.isArray(point) && point.length === 2)
+      if (validCoastline) {
+        try {
+          const coastlineLayer = safeAddLayer("coastline", L.polyline(safeCoastline, {
+            color: "#2563eb",
+            weight: 3,
+            opacity: 0.8,
+            interactive: false,
+          }), { points: safeCoastline.length })
+          if (coastlineLayer) {
+            coastlineLayer.bringToBack()
+            visibleLimitCount += 1
+          }
+        } catch (error) {
+          const message = error instanceof Error ? error.message : String(error)
+          console.warn("Invalid coastline geometry", { points: safeCoastline.length, error: message })
         }
+      } else {
+        console.warn("Skipping coastline layer due to invalid coordinate data", { points: safeCoastline.length })
       }
 
-      if (imblGeoJson) {
+      if (imblGeoJson && typeof imblGeoJson === "object" && (imblGeoJson as any).type) {
         imblSegments = extractImblSegments(imblGeoJson)
-        const imblLayer = safeAddLayer("imbl-main", L.geoJSON(imblGeoJson as any, {
-          style: {
-            color: "#dc2626",
-            weight: 3,
-            dashArray: "10, 10",
-          },
-          interactive: false,
-        }), { segments: imblSegments.length })
-        if (imblLayer) visibleLimitCount += 1
+        try {
+          const imblLayer = safeAddLayer("imbl-main", L.geoJSON(imblGeoJson as any, {
+            ...geoJsonOptions,
+            style: {
+              color: "#dc2626",
+              weight: 3,
+              dashArray: "10, 10",
+            },
+            interactive: false,
+          }), { segments: imblSegments.length })
+          if (imblLayer) visibleLimitCount += 1
+        } catch (error) {
+          const message = error instanceof Error ? error.message : String(error)
+          console.warn("Invalid IMBL geojson", { error: message })
+        }
 
         const offsetFeatures = buildImblOffsetFeatures(imblGeoJson)
         offsetFeatures.forEach((offset) => {
-          const offsetLayer = safeAddLayer("imbl-offset", L.geoJSON(offset.feature as any, {
-            style: {
-              color: offset.color,
-              weight: 2,
-              dashArray: "5, 5",
-            },
-            interactive: false,
-          }), {
-            name: offset.name,
-            distanceKm: offset.distanceKm,
-          })
-          if (offsetLayer) visibleLimitCount += 1
+          if (!offset.feature || !offset.feature.geometry) {
+            console.warn("Skipping invalid IMBL offset feature", { name: offset.name, distanceKm: offset.distanceKm })
+            return
+          }
+
+          try {
+            const offsetLayer = safeAddLayer("imbl-offset", L.geoJSON(offset.feature as any, {
+              ...geoJsonOptions,
+              style: {
+                color: offset.color,
+                weight: 2,
+                dashArray: "5, 5",
+              },
+              interactive: false,
+            }), {
+              name: offset.name,
+              distanceKm: offset.distanceKm,
+            })
+            if (offsetLayer) visibleLimitCount += 1
+          } catch (error) {
+            const message = error instanceof Error ? error.message : String(error)
+            console.warn("Invalid IMBL offset geometry", { name: offset.name, distanceKm: offset.distanceKm, error: message })
+          }
 
           const mid = getMidpointLatLngFromFeature(offset.feature)
           if (!mid) return
 
-          L.marker(mid, {
-            icon: L.divIcon({
-              className: "eez-label",
-              html: `<div style="background:${offset.color};color:#fff;padding:4px 9px;border-radius:7px;font-size:12px;white-space:nowrap;box-shadow:0 2px 10px rgba(0,0,0,0.45);font-weight:700;border:1px solid rgba(255,255,255,0.3);">${offset.name} (${offset.distanceKm} km)</div>`,
-              iconSize: [180, 28],
-              iconAnchor: [90, 14],
-            }),
-          }).addTo(map)
+          try {
+            L.marker(mid, {
+              icon: L.divIcon({
+                className: "eez-label",
+                html: `<div style="background:${offset.color};color:#fff;padding:4px 9px;border-radius:7px;font-size:12px;white-space:nowrap;box-shadow:0 2px 10px rgba(0,0,0,0.45);font-weight:700;border:1px solid rgba(255,255,255,0.3);">${offset.name} (${offset.distanceKm} km)</div>`,
+                iconSize: [180, 28],
+                iconAnchor: [90, 14],
+              }),
+            }).addTo(map)
+          } catch (error) {
+            const message = error instanceof Error ? error.message : String(error)
+            console.warn("Invalid IMBL offset label", { name: offset.name, distanceKm: offset.distanceKm, error: message })
+          }
         })
       }
       if (!imblGeoJson) {
@@ -654,14 +767,16 @@ export default function LeafletMap({
     ])
       .then(([coastGeoJson, imblGeoJson]) => {
         const coastline = parseCoastlineFromGeoJson(coastGeoJson) || TN_COASTLINE_FALLBACK
-        renderZoneBoundaries(
-          coastline,
-          coastGeoJson ?? {
-            type: "FeatureCollection",
-            features: [],
-          },
-          imblGeoJson
-        )
+        setTimeout(() => {
+          renderZoneBoundaries(
+            coastline,
+            coastGeoJson ?? {
+              type: "FeatureCollection",
+              features: [],
+            },
+            imblGeoJson
+          )
+        }, 100)
       })
       .catch(() => {
         const fallbackGeoJson = {
@@ -677,7 +792,9 @@ export default function LeafletMap({
             },
           ],
         }
-        renderZoneBoundaries(TN_COASTLINE_FALLBACK, fallbackGeoJson, null)
+        setTimeout(() => {
+          renderZoneBoundaries(TN_COASTLINE_FALLBACK, fallbackGeoJson, null)
+        }, 100)
       })
 
     // Initial selected vessel fallback
@@ -729,51 +846,165 @@ export default function LeafletMap({
     // Add styles
     const style = document.createElement("style")
     style.textContent = `
-      @keyframes ping {
-        75%, 100% { transform: scale(2.5); opacity: 0; }
+      @import url('https://fonts.googleapis.com/css2?family=Roboto+Mono:wght@400;500;700&display=swap');
+      @keyframes radarPulse {
+        0% { transform: scale(0.8); opacity: 0.45; }
+        70% { transform: scale(2.3); opacity: 0; }
+        100% { opacity: 0; }
       }
       .leaflet-container {
-        background: linear-gradient(180deg, #0a2540 0%, #0d3058 50%, #071e30 100%);
-        font-family: inherit;
+        background: radial-gradient(circle at top, rgba(12, 34, 58, 0.96), rgba(3, 9, 19, 1));
+        font-family: 'Roboto Mono', 'Courier New', monospace;
       }
       .leaflet-control-zoom a {
-        background: rgba(13, 33, 55, 0.95) !important;
-        color: #06b6d4 !important;
-        border-color: rgba(30, 58, 95, 0.5) !important;
+        background: rgba(4, 20, 41, 0.92) !important;
+        color: #7dd3fc !important;
+        border: 1px solid rgba(56, 189, 248, 0.24) !important;
+        box-shadow: 0 0 18px rgba(56, 189, 248, 0.18) !important;
       }
       .leaflet-control-zoom a:hover {
-        background: rgba(20, 45, 74, 0.98) !important;
+        background: rgba(9, 34, 60, 0.98) !important;
       }
       .leaflet-control-attribution {
-        background: rgba(10, 22, 40, 0.85) !important;
-        color: #64748b !important;
+        background: rgba(6, 15, 28, 0.78) !important;
+        color: #94a3b8 !important;
         font-size: 10px !important;
+        border: 1px solid rgba(56, 189, 248, 0.16) !important;
+        backdrop-filter: blur(12px);
       }
       .leaflet-control-attribution a {
-        color: #06b6d4 !important;
+        color: #67e8f9 !important;
       }
-      .eez-tooltip {
-        background: rgba(13, 33, 55, 0.98) !important;
-        color: white !important;
-        border: 1px solid rgba(6, 182, 212, 0.5) !important;
-        border-radius: 8px !important;
-        padding: 6px 10px !important;
-        font-size: 12px !important;
-        box-shadow: 0 4px 20px rgba(0,0,0,0.4) !important;
+      .hud-panel {
+        backdrop-filter: blur(18px);
+        background: rgba(4, 12, 24, 0.72);
+        border: 1px solid rgba(56, 189, 248, 0.18);
+        box-shadow: 0 18px 60px rgba(0, 0, 0, 0.32);
+        border-radius: 1rem;
+        color: #e2e8f0;
+      }
+      .hud-panel.hud-status-panel {
+        border-color: rgba(34, 211, 238, 0.28);
+      }
+      .hud-panel.hud-button {
+        border-color: rgba(56, 189, 248, 0.25);
+      }
+      .hud-panel.hud-counter {
+        border-color: rgba(59, 130, 246, 0.22);
+      }
+      .hud-panel .hud-label {
+        color: #cbd5e1;
+      }
+      .hud-panel .hud-value,
+      .leaflet-popup-content-wrapper,
+      .eez-tooltip,
+      .leaflet-control-attribution {
+        font-family: 'Roboto Mono', 'Courier New', monospace !important;
       }
       .leaflet-popup-content-wrapper {
-        background: rgba(13, 33, 55, 0.98) !important;
-        color: white !important;
-        border: 1px solid rgba(6, 182, 212, 0.4) !important;
-        border-radius: 12px !important;
-        box-shadow: 0 10px 50px rgba(0, 0, 0, 0.5) !important;
+        background: rgba(6, 15, 30, 0.88) !important;
+        border: 1px solid rgba(56, 189, 248, 0.16) !important;
+        color: #f8fafc !important;
+        border-radius: 1rem !important;
+        box-shadow: 0 20px 70px rgba(0, 0, 0, 0.5) !important;
+        backdrop-filter: blur(18px) !important;
       }
       .leaflet-popup-tip {
-        background: rgba(13, 33, 55, 0.98) !important;
+        background: rgba(6, 15, 30, 0.88) !important;
       }
       .leaflet-popup-close-button {
-        color: #06b6d4 !important;
+        color: #7dd3fc !important;
       }
+      .eez-tooltip {
+        background: rgba(4, 12, 24, 0.96) !important;
+        color: #e2e8f0 !important;
+        border: 1px solid rgba(34, 211, 238, 0.25) !important;
+        border-radius: 0.75rem !important;
+        padding: 8px 11px !important;
+        font-size: 12px !important;
+        box-shadow: 0 8px 30px rgba(0,0,0,0.35) !important;
+      }
+      .boat-marker-wrapper {
+        position: relative;
+        width: 48px;
+        height: 48px;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+      }
+      .boat-marker-wrapper.selected .boat-marker-icon {
+        filter: drop-shadow(0 0 16px rgba(56, 189, 248, 0.85));
+      }
+      .boat-marker-radar {
+        position: absolute;
+        inset: 0;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        pointer-events: none;
+      }
+      .boat-radar-ring {
+        position: absolute;
+        width: 42px;
+        height: 42px;
+        border: 2px solid var(--ring-color);
+        border-radius: 9999px;
+        opacity: 0.55;
+        animation: radarPulse 1.8s ease-out infinite;
+      }
+      .boat-radar-ring--delay {
+        animation-delay: 0.6s;
+      }
+      .boat-marker-icon {
+        width: 44px;
+        height: 44px;
+        display: block;
+        transform-origin: center center;
+        position: relative;
+        z-index: 1;
+      }
+      .vessel-marker {
+        width: 46px !important;
+        height: 46px !important;
+        display: flex !important;
+        align-items: center;
+        justify-content: center;
+      }
+      .vessel-radar {
+        position: relative;
+        width: 26px;
+        height: 26px;
+      }
+      .vessel-radar .radar-ring {
+        position: absolute;
+        inset: 0;
+        border-radius: 50%;
+        box-shadow: 0 0 12px rgba(96, 165, 250, 0.45);
+        animation: radarPulse 1.8s ease-out infinite;
+      }
+      .vessel-radar .radar-ring--delay {
+        animation-delay: 0.6s;
+      }
+      .vessel-radar .vessel-core {
+        position: absolute;
+        inset: 7px;
+        border-radius: 50%;
+        z-index: 2;
+        width: 12px;
+        height: 12px;
+      }
+      .vessel-marker.selected .vessel-core {
+        box-shadow: 0 0 24px rgba(255, 255, 255, 0.45), inset 0 0 16px rgba(255, 255, 255, 0.75);
+      }
+      .hud-status-pill {
+        min-width: 5px;
+        min-height: 5px;
+        border-radius: 9999px;
+      }
+      .status-safe { background: #5effa8 !important; box-shadow: 0 0 14px #5effa8; }
+      .status-warning { background: #fff55b !important; box-shadow: 0 0 18px #fff55b; }
+      .status-danger { background: #ff4a4a !important; box-shadow: 0 0 18px #ff4a4a; }
+      .status-unknown { background: #38bdf8 !important; box-shadow: 0 0 14px #38bdf8; }
     `
     document.head.appendChild(style)
     styleElRef.current = style
@@ -783,6 +1014,10 @@ export default function LeafletMap({
       window.clearTimeout(invalidateTimeoutLong)
       ro.disconnect()
       map.off("dragstart", handleDragStart)
+      if (trajectoryPolylineRef.current) {
+        trajectoryPolylineRef.current.remove()
+        trajectoryPolylineRef.current = null
+      }
       if (styleElRef.current) {
         styleElRef.current.remove()
         styleElRef.current = null
@@ -796,6 +1031,11 @@ export default function LeafletMap({
 
   useEffect(() => {
     if (!selectedBoatId || !mapInstanceRef.current) return
+    // Remove old trajectory when switching boats
+    if (trajectoryPolylineRef.current) {
+      trajectoryPolylineRef.current.remove()
+      trajectoryPolylineRef.current = null
+    }
     selectedBoatIdRef.current = selectedBoatId
     primaryPathBoatIdRef.current = selectedBoatId
     const boat = boatDataByIdRef.current.get(selectedBoatId)
@@ -920,18 +1160,14 @@ export default function LeafletMap({
       <div ref={mapRef} className="w-full h-full" style={{ minHeight: '520px', borderRadius: '1rem' }} />
 
       <div className="absolute top-4 left-4 z-[1000]">
-        <div className="flex items-center gap-2 px-3.5 py-2.5 rounded-lg text-base font-medium" style={{
-          background: "linear-gradient(135deg, rgba(10, 22, 40, 0.95) 0%, rgba(13, 33, 55, 0.9) 100%)",
-          border: "1px solid rgba(6, 182, 212, 0.4)",
-          boxShadow: "0 4px 20px rgba(0, 0, 0, 0.4)",
-        }}>
-          <div className={`w-3 h-3 rounded-full flex-shrink-0 ${isTracking ? "bg-green-400 animate-pulse" : "bg-yellow-400"}`} />
-          <span className="text-sm text-gray-200">{isTracking ? "Live" : "Offline"}</span>
+        <div className="hud-panel hud-status-panel flex items-center gap-3 px-4 py-3 rounded-2xl text-base font-medium">
+          <div className={`hud-status-pill ${isTracking ? 'status-safe animate-pulse' : 'status-warning'}`} />
+          <span className="text-sm text-slate-100">{isTracking ? 'LIVE' : 'OFFLINE'}</span>
         </div>
       </div>
 
       <div className="absolute top-4 right-4 z-[1000]">
-        <div className="flex items-center gap-2">
+        <div className="flex items-center gap-3">
           {!followVessel && (
             <button
               onClick={() => {
@@ -942,8 +1178,7 @@ export default function LeafletMap({
                   if (selectedMarker) mapInstanceRef.current.panTo(selectedMarker.getLatLng())
                 }
               }}
-              className="flex items-center gap-1.5 px-3.5 py-2.5 rounded-lg text-sm font-semibold text-white transition-all"
-              style={{ background: "rgba(6,182,212,0.9)", border: "1px solid rgba(6,182,212,0.8)", boxShadow: "0 2px 12px rgba(6,182,212,0.4)" }}
+              className="hud-panel hud-button flex items-center gap-2 px-4 py-3 rounded-2xl text-sm font-semibold text-white transition-all"
             >
               <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                 <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M17.657 16.657L13.414 20.9a1.998 1.998 0 01-2.827 0l-4.244-4.243a8 8 0 1111.314 0z" />
@@ -953,18 +1188,17 @@ export default function LeafletMap({
             </button>
           )}
           {followVessel && (
-            <div className="flex items-center gap-1.5 px-3.5 py-2.5 rounded-lg text-sm font-medium" style={{ background: "rgba(10,22,40,0.85)", border: "1px solid rgba(34,197,94,0.4)" }}>
-              <span className="w-2 h-2 rounded-full bg-green-400 animate-pulse" />
-              <span className="text-green-300">Following</span>
+            <div className="hud-panel hud-status-panel flex items-center gap-2 px-4 py-3 rounded-2xl text-sm font-medium">
+              <span className="hud-status-pill status-safe animate-pulse" />
+              <span className="text-emerald-200">Following</span>
             </div>
           )}
-          <div className="px-3 py-2.5 rounded-lg text-sm text-cyan-400 font-medium" style={{ background: "rgba(10,22,40,0.85)", border: "1px solid rgba(6,182,212,0.3)" }}>
-            {boundaryCount} limits
+          <div className="hud-panel hud-counter px-4 py-3 rounded-2xl text-sm text-cyan-200 font-medium">
+            <span className="hud-label">Limit Count</span>
+            <div className="hud-value">{boundaryCount} zones</div>
           </div>
         </div>
       </div>
     </div>
   )
 }
-
-

@@ -110,24 +110,33 @@ void setup() {
 
 void loop() {
   float currentLat, currentLon;
+  static unsigned long lastWaitPrint = 0; // Stopwatch for the waiting message
   
   if (DEMO_MODE) {
     currentLat = simLats[simStep];
     currentLon = simLons[simStep];
     simStep = (simStep + 1) % 15;
   } else {
-    while (gpsSerial.available())
+    // 1. CONSTANTLY feed the GPS data to the library (no delays allowed here!)
+    while (gpsSerial.available() > 0) {
       gps.encode(gpsSerial.read());
-    
-    if (!gps.location.isValid()) {
-      Serial.println("Waiting for GPS fix...");
-      delay(2000);
-      return;
     }
+    
+    // 2. Check if we have a valid location
+    if (!gps.location.isValid()) {
+      // Only print every 2 seconds, but DO NOT pause the microcontroller
+      if (millis() - lastWaitPrint > 2000) {
+        Serial.println("Waiting for GPS fix...");
+        lastWaitPrint = millis();
+      }
+      return; // Go back to the top of the loop immediately to read more data
+    }
+    
     currentLat = gps.location.lat();
     currentLon = gps.location.lng();
   }
   
+  // --- The rest of your logic runs only IF we have a valid fix ---
   float dist = distanceToBoundary(currentLat, currentLon);
   if (dist <= SAFE_KM) {
     currentZone = "SAFE";
@@ -139,18 +148,21 @@ void loop() {
   updateAlert();
   
   String zone = currentZone;
-  
   Serial.printf("Lat: %.4f | Lon: %.4f | Dist: %.2fkm | Zone: %s\n", currentLat, currentLon, dist, zone.c_str());
   
-  // Transmit over LoRa (Exact format the Base Station expects)
+  // Transmit over LoRa
   LoRa.beginPacket();
   LoRa.printf("BOAT1,%.4f,%.4f,%.2f,%s", currentLat, currentLon, dist, zone.c_str());
   LoRa.endPacket();
   
-  // Smart wait: keeps LED/buzzer updating while waiting 2s for next packet
+  // Smart wait for the LoRa broadcast (keeps alerts updating)
   unsigned long waitStart = millis();
-  while (millis() - waitStart < 2000) {
+  while (millis() - waitStart < 3000) {
     updateAlert();
-    delay(20); 
+    // Keep feeding the GPS even while waiting to broadcast again!
+    while (gpsSerial.available() > 0) {
+      gps.encode(gpsSerial.read());
+    }
+    delay(10); 
   }
 }
