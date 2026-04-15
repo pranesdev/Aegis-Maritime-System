@@ -32,6 +32,14 @@ type BoatMarkerData = {
   timestamp?: string
 }
 
+type TurfLineFeature = {
+  type: "Feature"
+  geometry: {
+    type: "LineString" | "MultiLineString"
+    coordinates: unknown
+  }
+}
+
 // ─── Tamil Nadu Coastline + Distance Zones ─────────────────────────────────
 // Coordinates are [lat, lng]
 const TN_COASTLINE_FALLBACK: [number, number][] = [
@@ -220,36 +228,69 @@ function parseCoastlineFromGeoJson(data: unknown): [number, number][] | null {
   return latLngs.length > 1 ? latLngs : null
 }
 
-function extractImblLineFeature(data: unknown): turf.Feature<turf.LineString | turf.MultiLineString> | null {
+function extractImblLineFeature(data: unknown): TurfLineFeature | null {
   if (!data || typeof data !== "object") return null
 
-  const maybeFeature = data as { type?: string; geometry?: { type?: string } }
+  const maybeFeature = data as { type?: string; geometry?: { type?: string; coordinates?: unknown } }
   if (
     maybeFeature.type === "Feature" &&
     (maybeFeature.geometry?.type === "LineString" || maybeFeature.geometry?.type === "MultiLineString")
   ) {
-    return maybeFeature as turf.Feature<turf.LineString | turf.MultiLineString>
+    return maybeFeature as TurfLineFeature
   }
 
-  const featureCollection = data as { type?: string; features?: Array<{ geometry?: { type?: string } }> }
+  const featureCollection = data as { type?: string; features?: Array<{ geometry?: { type?: string; coordinates?: unknown } }> }
   if (featureCollection.type !== "FeatureCollection" || !Array.isArray(featureCollection.features)) return null
 
   const lineFeature = featureCollection.features.find(
     (feature) => feature?.geometry?.type === "LineString" || feature?.geometry?.type === "MultiLineString"
   )
 
-  return (lineFeature as turf.Feature<turf.LineString | turf.MultiLineString>) ?? null
+  return (lineFeature as TurfLineFeature) ?? null
+}
+
+function normalizeLineStringCoordinates(coords: unknown): [number, number][] {
+  if (!Array.isArray(coords)) return []
+  return coords
+    .filter((point): point is [number, number] => Array.isArray(point) && point.length >= 2)
+    .map(([lng, lat]) => [Number(lat), Number(lng)] as [number, number])
+    .filter(([lat, lng]) => Number.isFinite(lat) && Number.isFinite(lng))
+}
+
+function getLineStringsFromFeature(feature: TurfLineFeature | null): [number, number][][] {
+  if (!feature || !feature.geometry) return []
+
+  const geometry = feature.geometry
+  if (geometry.type === "LineString") {
+    const line = normalizeLineStringCoordinates(geometry.coordinates)
+    return line.length > 1 ? [line] : []
+  }
+
+  if (geometry.type === "MultiLineString" && Array.isArray(geometry.coordinates)) {
+    return geometry.coordinates
+      .map(normalizeLineStringCoordinates)
+      .filter((line) => line.length > 1)
+  }
+
+  return []
 }
 
 function buildImblOffsetFeatures(data: unknown) {
   const sourceLine = extractImblLineFeature(data)
-  if (!sourceLine) return [] as Array<{ name: string; color: string; distanceKm: number; feature: turf.Feature<turf.LineString | turf.MultiLineString> }>
+  if (!sourceLine) return [] as Array<{ name: string; color: string; distanceKm: number; feature: TurfLineFeature }>
 
   return IMBL_OFFSET_CONFIG.map((config) => {
     try {
       const feature = turf.lineOffset(sourceLine, IMBL_OFFSET_DIRECTION * config.distanceKm, {
         units: "kilometers",
       }) as turf.Feature<turf.LineString | turf.MultiLineString>
+
+      const lines = getLineStringsFromFeature(feature)
+      if (lines.length === 0) {
+        console.warn("Skipping invalid IMBL offset feature geometry", { config })
+        return null
+      }
+
       return {
         name: config.name,
         color: config.color,
@@ -689,44 +730,59 @@ export default function LeafletMap({
         console.warn("Skipping coastline layer due to invalid coordinate data", { points: safeCoastline.length })
       }
 
-      if (imblGeoJson && typeof imblGeoJson === "object" && (imblGeoJson as any).type) {
+      const imblFeature = extractImblLineFeature(imblGeoJson)
+      if (imblFeature) {
         imblSegments = extractImblSegments(imblGeoJson)
-        try {
-          const imblLayer = safeAddLayer("imbl-main", L.geoJSON(imblGeoJson as any, {
-            ...geoJsonOptions,
-            style: {
-              color: "#dc2626",
-              weight: 3,
-              dashArray: "10, 10",
-            },
-            interactive: false,
-          }), { segments: imblSegments.length })
-          if (imblLayer) visibleLimitCount += 1
-        } catch (error) {
-          const message = error instanceof Error ? error.message : String(error)
-          console.warn("Invalid IMBL geojson", { error: message })
+        const imblLines = getLineStringsFromFeature(imblFeature)
+        if (imblLines.length > 0) {
+          try {
+            const imblLayer = safeAddLayer(
+              "imbl-main",
+              L.featureGroup(
+                imblLines.map((line) =>
+                  L.polyline(line, {
+                    color: "#dc2626",
+                    weight: 3,
+                    dashArray: "10, 10",
+                    interactive: false,
+                  })
+                )
+              ),
+              { segments: imblSegments.length }
+            )
+            if (imblLayer) visibleLimitCount += 1
+          } catch (error) {
+            const message = error instanceof Error ? error.message : String(error)
+            console.warn("Invalid IMBL line geometry", { error: message })
+          }
         }
 
         const offsetFeatures = buildImblOffsetFeatures(imblGeoJson)
         offsetFeatures.forEach((offset) => {
-          if (!offset.feature || !offset.feature.geometry) {
+          const offsetLines = getLineStringsFromFeature(offset.feature)
+          if (offsetLines.length === 0) {
             console.warn("Skipping invalid IMBL offset feature", { name: offset.name, distanceKm: offset.distanceKm })
             return
           }
 
           try {
-            const offsetLayer = safeAddLayer("imbl-offset", L.geoJSON(offset.feature as any, {
-              ...geoJsonOptions,
-              style: {
-                color: offset.color,
-                weight: 2,
-                dashArray: "5, 5",
-              },
-              interactive: false,
-            }), {
-              name: offset.name,
-              distanceKm: offset.distanceKm,
-            })
+            const offsetLayer = safeAddLayer(
+              "imbl-offset",
+              L.featureGroup(
+                offsetLines.map((line) =>
+                  L.polyline(line, {
+                    color: offset.color,
+                    weight: 2,
+                    dashArray: "5, 5",
+                    interactive: false,
+                  })
+                )
+              ),
+              {
+                name: offset.name,
+                distanceKm: offset.distanceKm,
+              }
+            )
             if (offsetLayer) visibleLimitCount += 1
           } catch (error) {
             const message = error instanceof Error ? error.message : String(error)
@@ -734,7 +790,10 @@ export default function LeafletMap({
           }
 
           const mid = getMidpointLatLngFromFeature(offset.feature)
-          if (!mid) return
+          if (!mid || !mid.every(Number.isFinite)) {
+            console.warn("Skipping invalid IMBL offset label", { name: offset.name, distanceKm: offset.distanceKm, mid })
+            return
+          }
 
           try {
             L.marker(mid, {
