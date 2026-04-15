@@ -32,13 +32,7 @@ type BoatMarkerData = {
   timestamp?: string
 }
 
-type TurfLineFeature = {
-  type: "Feature"
-  geometry: {
-    type: "LineString" | "MultiLineString"
-    coordinates: unknown
-  }
-}
+type TurfLineFeature = turf.Feature<turf.LineString | turf.MultiLineString>
 
 // ─── Tamil Nadu Coastline + Distance Zones ─────────────────────────────────
 // Coordinates are [lat, lng]
@@ -281,9 +275,9 @@ function buildImblOffsetFeatures(data: unknown) {
 
   return IMBL_OFFSET_CONFIG.map((config) => {
     try {
-      const feature = turf.lineOffset(sourceLine, IMBL_OFFSET_DIRECTION * config.distanceKm, {
+      const feature = turf.lineOffset(sourceLine as any, IMBL_OFFSET_DIRECTION * config.distanceKm, {
         units: "kilometers",
-      }) as turf.Feature<turf.LineString | turf.MultiLineString>
+      }) as TurfLineFeature
 
       const lines = getLineStringsFromFeature(feature)
       if (lines.length === 0) {
@@ -301,10 +295,10 @@ function buildImblOffsetFeatures(data: unknown) {
       console.warn("Failed to create IMBL offset feature", { config, error: error instanceof Error ? error.message : String(error) })
       return null
     }
-  }).filter(Boolean) as Array<{ name: string; color: string; distanceKm: number; feature: turf.Feature<turf.LineString | turf.MultiLineString> }>
+  }).filter(Boolean) as Array<{ name: string; color: string; distanceKm: number; feature: TurfLineFeature }>
 }
 
-function getMidpointLatLngFromFeature(feature: turf.Feature<turf.LineString | turf.MultiLineString>): [number, number] | null {
+function getMidpointLatLngFromFeature(feature: TurfLineFeature): [number, number] | null {
   const geometry = feature.geometry
   if (geometry.type === "LineString") {
     const coords = geometry.coordinates
@@ -314,9 +308,9 @@ function getMidpointLatLngFromFeature(feature: turf.Feature<turf.LineString | tu
     return [Number(mid[1]), Number(mid[0])]
   }
 
-  if (geometry.type === "MultiLineString") {
-    const line = geometry.coordinates.find((segment) => Array.isArray(segment) && segment.length > 0)
-    if (!line) return null
+  if (geometry.type === "MultiLineString" && Array.isArray(geometry.coordinates)) {
+    const line = geometry.coordinates.find((segment: unknown) => Array.isArray(segment) && segment.length > 0)
+    if (!line || !Array.isArray(line)) return null
     const mid = line[Math.floor(line.length / 2)]
     if (!Array.isArray(mid) || mid.length < 2) return null
     return [Number(mid[1]), Number(mid[0])]
@@ -373,10 +367,10 @@ export default function LeafletMap({
   demoMode = false,
 }: LeafletMapProps) {
   const mapRef = useRef<HTMLDivElement>(null)
-  const mapInstanceRef = useRef<L.Map | null>(null)
-  const markerByBoatRef = useRef<Map<string, L.Marker>>(new Map())
+  const mapInstanceRef = useRef<any>(null)
+  const markerByBoatRef = useRef<Map<string, any>>(new Map())
   const boatDataByIdRef = useRef<Map<string, BoatMarkerData>>(new Map())
-  const pathPolylineRef = useRef<L.Polyline | null>(null)
+  const pathPolylineRef = useRef<any>(null)
   const pathRef = useRef<[number, number][]>([])
   const socketRef = useRef<Socket | null>(null)
   const [isTracking, setIsTracking] = useState(false)
@@ -390,12 +384,12 @@ export default function LeafletMap({
   const primaryPathBoatIdRef = useRef<string | null>(selectedBoatId ?? null)
   const [followVessel, setFollowVessel] = useState(true)
   const styleElRef = useRef<HTMLStyleElement | null>(null)
-  const zoneBoundaryRefs = useRef<{ safe: L.Polyline | null; warning: L.Polyline | null; danger: L.Polyline | null }>({
+  const zoneBoundaryRefs = useRef<{ safe: any; warning: any; danger: any }>({
     safe: null,
     warning: null,
     danger: null,
   })
-  const trajectoryPolylineRef = useRef<L.Polyline | null>(null)
+  const trajectoryPolylineRef = useRef<any>(null)
 
   const normalizeZone = (zone: unknown): ZoneWithUnknown => {
     if (zone === "SAFE" || zone === "WARNING" || zone === "DANGER") return zone
@@ -478,7 +472,7 @@ export default function LeafletMap({
   const getZoneColor = (zone: ZoneWithUnknown) =>
     zone === "DANGER" ? "#ff4a4a" : zone === "WARNING" ? "#fde047" : zone === "SAFE" ? "#5effa8" : "#38bdf8"
 
-  const updateMarkerAppearance = (marker: L.Marker, boat: BoatMarkerData, selected: boolean) => {
+  const updateMarkerAppearance = (marker: any, boat: BoatMarkerData, selected: boolean) => {
     const element = marker.getElement() as HTMLElement | null
     if (!element) return
 
@@ -686,7 +680,11 @@ export default function LeafletMap({
         return
       }
 
-      const safeAddLayer = <T extends L.Layer>(layerName: string, layer: T, details?: Record<string, unknown>): T | null => {
+      const safeAddLayer = (layerName: string, layer: any, details?: Record<string, unknown>): any | null => {
+        if (!map || !map._container || typeof map._container.appendChild !== 'function') {
+          console.warn("Map not ready for layer addition", { layer: layerName })
+          return null
+        }
         try {
           layer.addTo(map)
           return layer
@@ -806,7 +804,7 @@ export default function LeafletMap({
             }).addTo(map)
           } catch (error) {
             const message = error instanceof Error ? error.message : String(error)
-            console.warn("Invalid IMBL offset label", { name: offset.name, distanceKm: offset.distanceKm, error: message })
+            console.warn("[browser] Invalid IMBL offset label", { name: offset.name, distanceKm: offset.distanceKm, error: message })
           }
         })
       }

@@ -2,7 +2,7 @@
 
 import { useState, useCallback, useEffect, useRef } from "react"
 import dynamic from "next/dynamic"
-import { TelemetryPanel } from "./telemetry-panel" // NEW IMPORT
+import { TelemetryPanel } from "./TelemetryPanel"
 
 type AlertEntry = { zone: string; lat: number; lon: number; timestamp: string }
 type ZoneStatus = "DANGER" | "WARNING" | "ALERT" | "CLEAR" | "UNKNOWN"
@@ -35,7 +35,7 @@ function formatRelativeTime(timestamp: string) {
   }).format(date) + " UTC"
 }
 
-const LeafletMap = dynamic(() => import("@/components/leaflet-map"), {
+const LeafletMap = dynamic(() => import("@/components/LeafletMap"), {
   ssr: false,
   loading: () => (
     <div className="w-full h-full rounded-xl bg-[#0a2540] flex items-center justify-center" style={{ minHeight: "500px" }}>
