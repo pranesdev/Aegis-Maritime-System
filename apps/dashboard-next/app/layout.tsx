@@ -1,7 +1,7 @@
 import type { Metadata } from 'next'
 import { Geist, Geist_Mono } from 'next/font/google'
 import { Analytics } from '@vercel/analytics/next'
-import Navbar from '@/components/TopNav'
+import TopNav from '@/components/TopNav'
 import './globals.css'
 
 const _geist = Geist({ subsets: ["latin"] });
