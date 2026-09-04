@@ -467,6 +467,16 @@ app.post('/api/location', async (req, res) => {
     const newData = new Boat({ boatId, lat, lon, distance, zone })
     await newData.save()
 
+    // --- Zone-change alert detection ---
+    const previousZone = lastZoneByBoat.get(boatId)
+    if (zone && zone !== previousZone && (zone === 'WARNING' || zone === 'DANGER')) {
+      const alert = new AlertEvent({ boatId, zone, lat, lon })
+      await alert.save()
+      io.emit('alertEvent', alert)
+      console.log(`[ALERT] ${boatId} entered ${zone} zone`)
+    }
+    lastZoneByBoat.set(boatId, zone)
+
     if (typeof io !== 'undefined') {
       io.emit('locationUpdate', newData)
     }
