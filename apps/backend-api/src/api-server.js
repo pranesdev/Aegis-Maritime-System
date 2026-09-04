@@ -460,7 +460,13 @@ app.post('/api/location', async (req, res) => {
   }
 
   // ---- 2️⃣ Payload Bypass (Validation Removed for Troubleshooting)
-  const { boatId, lat, lon, distance, zone } = req.body
+  // ---- 2️⃣ Validate and normalize payload
+  const validation = validateLocationPayload(req.body);
+  if (!validation.ok) {
+    console.warn(`[VALIDATION FAIL] ${validation.error}`);
+    return res.status(400).json({ error: validation.error });
+  }
+  const { boatId, lat, lon, distance, zone } = validation.data;
 
   console.log(`[RECEIVED] Attempting to save: Boat=${boatId}, ${zone}`)
 
