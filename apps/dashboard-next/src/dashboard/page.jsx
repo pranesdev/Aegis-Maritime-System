@@ -929,78 +929,69 @@ useEffect(() => {
                      the boat. Demo boats don't carry status/type/group
                      fields, so the regular card layout would render
                      empty anyway. */}
-                 {demoMode ? (
-                   <div className="grid grid-cols-2 gap-2">
-                     {boats.length === 0 && (
-                       <div className="col-span-2 text-[#5a6478] text-[11px] text-center mt-4">
-                         NO VESSELS
-                       </div>
-                     )}
-                     {boats.map((b) => {
-                       const isSelected = selectedBoatId === b.boatId;
-                       const color = zoneColor(b.zone);
-                       const bg = zoneBg(b.zone);
-                       const isAlert = b.zone === 'WARNING' || b.zone === 'DANGER' || b.zone === 'ALERT';
-                       return (
-                         <button
-                           key={b.boatId}
-                           onClick={() => {
-                             setSelectedBoatId(b.boatId);
-                             setSelectedBoat(b);
-                           }}
-                           title={`${b.boatId} — ${b.zone}`}
-                           className={`flex items-center gap-2 px-3 py-2 rounded-lg border text-left cursor-pointer transition-all glass-panel relative overflow-hidden ${
-                             isSelected
-                               ? 'shadow-[0_0_14px_rgba(56,189,248,0.4)] scale-[1.02]'
-                               : 'opacity-90 hover:opacity-100 hover:scale-[1.01]'
+                 <div className="grid grid-cols-2 gap-2">
+                   {filteredBoats.length === 0 && (
+                     <div className="col-span-2 text-[#5a6478] text-[11px] text-center mt-4">
+                       NO VESSELS FOUND
+                     </div>
+                   )}
+                   {filteredBoats.map((b) => {
+                     const isSelected = selectedBoatId === b.boatId;
+                     const color = zoneColor(b.zone);
+                     const bg = zoneBg(b.zone);
+                     const isAlert = b.zone === 'WARNING' || b.zone === 'DANGER' || b.zone === 'ALERT';
+                     return (
+                       <button
+                         key={b.boatId}
+                         onClick={() => {
+                           setSelectedBoatId(b.boatId);
+                           setSelectedBoat(b);
+                         }}
+                         title={`${b.boatId} — ${b.zone}`}
+                         className={`flex items-center gap-2 px-3 py-2 rounded-lg border text-left cursor-pointer transition-all glass-panel relative overflow-hidden ${
+                           isSelected
+                             ? 'shadow-[0_0_14px_rgba(56,189,248,0.4)] scale-[1.02]'
+                             : 'opacity-90 hover:opacity-100 hover:scale-[1.01]'
+                         }`}
+                         style={{
+                           borderColor: isSelected ? color : `${color}80`,
+                           color: '#dce4e5',
+                           background: isSelected
+                             ? `linear-gradient(135deg, ${bg}, ${bg.replace('0.3', '0.45').replace('0.4', '0.55')})`
+                             : bg,
+                           borderWidth: isSelected ? '1.5px' : '1px',
+                         }}
+                       >
+                         <span
+                           className={`w-2 h-2 rounded-full shrink-0 ${
+                             isAlert ? 'animate-pulse' : ''
                            }`}
-                           style={{
-                             borderColor: isSelected ? color : `${color}80`,
-                             color: '#dce4e5',
-                             background: isSelected
-                               ? `linear-gradient(135deg, ${bg}, ${bg.replace('0.3', '0.45').replace('0.4', '0.55')})`
-                               : bg,
-                             borderWidth: isSelected ? '1.5px' : '1px',
-                           }}
-                         >
-                           <span
-                             className={`w-2 h-2 rounded-full shrink-0 ${
-                               isAlert ? 'animate-pulse' : ''
-                             }`}
-                             style={{ background: color, boxShadow: `0 0 8px ${color}` }}
-                           />
-                           <div className="flex-1 min-w-0">
+                           style={{ background: color, boxShadow: `0 0 8px ${color}` }}
+                         />
+                         <div className="flex-1 min-w-0">
+                           <div className="flex items-center justify-between gap-1">
                              <div className="text-[#c3f5ff] text-[11px] font-bold tracking-widest truncate">
                                {b.boatId}
                              </div>
-                             <div className="text-[10px] tracking-wider truncate" style={{ color }}>
-                               {b.zone}
-                             </div>
+                             {!demoMode && (
+                               <span className="text-[8px] font-bold opacity-70" style={{ color: statusColor(b.status) }}>
+                                 {b.status}
+                               </span>
+                             )}
                            </div>
-                         </button>
-                       );
-                     })}
-                   </div>
-                 ) : (
-                   <>
-                     {filteredBoats.length === 0 && <div className="text-[#5a6478] text-[11px] text-center mt-4">No vessels found</div>}
-                     {filteredBoats.map(b => (
-                       <button key={b.boatId} onClick={() => {setSelectedBoat(b); setSelectedBoatId(b.boatId);}}
-                         className={`w-full text-left rounded-lg border transition-all cursor-pointer glass-panel relative overflow-hidden ${selectedBoatId === b.boatId ? 'bg-[rgba(0,218,243,0.12)] border-[rgba(0,218,243,0.4)] shadow-[inset_0_0_15px_rgba(0,218,243,0.1)]' : 'bg-[rgba(10,15,20,0.5)] border-[rgba(59,73,76,0.4)] hover:border-[rgba(195,245,255,0.3)] hover:bg-[rgba(25,35,40,0.6)]'}`}>
-                         <div className="flex items-center gap-3.5 p-3">
-                           <div className="w-1.5 h-8 rounded-full shrink-0" style={{ background: statusColor(b.status) }} />
-                           <div className="flex-1 min-w-0">
-                             <div className="flex items-center justify-between">
-                               <span className="text-[#dce4e5] text-[12px] font-bold tracking-widest truncate">{b.boatId}</span>
-                               <span className="text-[9px] shrink-0 font-semibold tracking-wider" style={{ color: statusColor(b.status) }}>{b.status}</span>
-                             </div>
-                             <div className="text-[#8a96ad] text-[10px] mt-1 truncate">{b.type} | {b.group}</div>
+                           <div className="text-[10px] tracking-wider truncate" style={{ color }}>
+                             {b.zone}
                            </div>
+                           {!demoMode && (
+                             <div className="text-[8px] text-[#8a96ad] truncate opacity-60">
+                               {b.type} | {b.group}
+                             </div>
+                           )}
                          </div>
                        </button>
-                     ))}
-                   </>
-                 )}
+                     );
+                   })}
+                 </div>
               </div>
             </div>
 
