@@ -19,9 +19,12 @@ export function getRuntimeEnv() {
     origin = window.location.origin;
   }
 
+  const backendUrl = import.meta.env.VITE_BACKEND_URL
+    || (import.meta.env.PROD ? 'https://aegis-maritime-system-2.onrender.com' : origin);
+
   return {
-    NEXT_PUBLIC_BACKEND_URL: origin,
-    NEXT_PUBLIC_API_URL: origin,
-    NEXT_PUBLIC_SOCKET_URL: origin,
+    NEXT_PUBLIC_BACKEND_URL: backendUrl,
+    NEXT_PUBLIC_API_URL: backendUrl,
+    NEXT_PUBLIC_SOCKET_URL: import.meta.env.VITE_SOCKET_URL || backendUrl,
   };
 }

@@ -1,0 +1,20 @@
+services:
+  - type: web
+    name: aegis-maritime-api
+    runtime: node
+    plan: free
+    rootDir: apps/backend-api
+    buildCommand: npm ci
+    startCommand: npm start
+    healthCheckPath: /health
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: MONGO_URI
+        sync: false
+      - key: JWT_SECRET
+        sync: false
+      - key: HARDWARE_API_KEY
+        sync: false
+      - key: ALLOWED_ORIGINS
+        sync: false

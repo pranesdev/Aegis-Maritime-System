@@ -37,6 +37,28 @@ From apps/backend-api:
 
 ---
 
+## Cloud hosting (Vercel + Render)
+
+The dashboard is a Vite static site in `apps/dashboard-next`; the API is a Node.js service in `apps/backend-api`.
+
+### Render API
+
+1. In Render, create a Blueprint from this repository and use `render.yaml`, or create a Web Service with root directory `apps/backend-api`, build command `npm ci`, and start command `npm start`.
+2. Set `MONGO_URI`, `JWT_SECRET`, `HARDWARE_API_KEY`, and `ALLOWED_ORIGINS` in the Render service environment. Use the Atlas connection string, generate a strong JWT secret, and set `HARDWARE_API_KEY` to the same value in the receiver firmware's local `secrets.h`.
+3. Once Vercel gives you the production domain, set `ALLOWED_ORIGINS` to that exact origin (for example, `https://your-project.vercel.app`, without a trailing slash). Render provides `PORT` automatically.
+4. Wait for `/health` to pass before configuring the dashboard.
+
+### Vercel dashboard
+
+1. Import this repository into Vercel and set the project root directory to `apps/dashboard-next`.
+2. Vercel uses `apps/dashboard-next/vercel.json` to build with `npm run build`, publish `dist`, and route SPA paths to `index.html`.
+3. Add `VITE_BACKEND_URL` to the Vercel project environment variables, set to the Render service origin (for example, `https://aegis-maritime-system-2.onrender.com`, without `/api/location`). Optionally set `VITE_SOCKET_URL` to the same origin.
+4. Deploy or redeploy after setting the variables. Vercel builds inject them into the dashboard.
+
+For the ESP32 receiver, keep the Render HTTPS endpoint in its ignored local `secrets.h`, such as `https://your-render-service.onrender.com/api/location`; retain `WiFiClientSecure` and configure its CA certificate. Never commit `.env` or `secrets.h`.
+
+---
+
 ## One‑Command Deploy + Auto‑Update (Docker + Watchtower)
 
 **Goal:** Backend + Next.js dashboard run together in Docker. After the initial setup, a simple
